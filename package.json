@@ -25,7 +25,8 @@
       {
         "provider": "github",
         "owner": "iamholak",
-        "repo": "ClueInterview"
+        "repo": "clueinterviewreleases",
+        "private": false
       }
     ],
     "files": [

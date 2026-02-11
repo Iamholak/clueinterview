@@ -72,7 +72,15 @@ function createWindow() {
 
   autoUpdater.on('error', (err) => {
     console.error('Auto-updater error:', err);
+    // Don't show error dialog to users, just log it
   });
+
+  // Check for updates every 2 hours
+  setInterval(() => {
+    if (!isDev) {
+      autoUpdater.checkForUpdates();
+    }
+  }, 2 * 60 * 60 * 1000);
 
   // Global Shortcut to toggle visibility (Safety net since no taskbar icon)
   globalShortcut.register('CommandOrControl+Shift+H', () => {
