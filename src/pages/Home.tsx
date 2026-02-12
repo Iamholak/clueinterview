@@ -797,13 +797,13 @@ export default function Home() {
               size={20} 
               style={{cursor: 'pointer', color: '#00f3ff'}} 
               onClick={handleNewSession}
-              title="New Session (Ctrl+K)"
+              aria-label="New Session (Ctrl+K)"
             />
             <Camera
               size={20}
               style={{cursor: 'pointer', color: isCapturing ? '#ff5555' : '#00f3ff'}}
               onClick={handleCaptureScreen}
-              title="Capture Screen"
+              aria-label="Capture Screen"
             />
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer'}} onClick={() => setSpeakerMode(speakerMode === 'interviewer' ? 'me' : 'interviewer')}>
@@ -862,7 +862,7 @@ export default function Home() {
                         {copiedIndex === idx ? <Check size={14} /> : <Copy size={14} />}
                     </button>
                 </h4>
-                <div className="chat-text ai-answer">{msg.text}</div>
+                <div className={`chat-text ai-answer ${!showCodeBlocks ? 'hide-code' : ''}`}>{msg.text}</div>
             </div>
         ))}
         

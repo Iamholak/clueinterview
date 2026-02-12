@@ -158,6 +158,12 @@ body {
   font-size: 0.95rem;
   line-height: 1.5;
   white-space: pre-wrap;
+  transition: opacity 0.3s ease;
+}
+
+.chat-text.hide-code code,
+.chat-text.hide-code pre {
+  display: none;
 }
 
 .ai-answer ul {

@@ -5,14 +5,16 @@ declare global {
   interface Window {
     webkitSpeechRecognition: any;
     SpeechRecognition: any;
-    electron?: {
+    electron: {
       minimize: () => void;
       maximize: () => void;
       close: () => void;
-      setContentProtection?: (enable: boolean) => void;
+      toggleWindow: () => void;
+      captureScreen: () => Promise<string>;
       askAI: (params: any) => Promise<string>;
       transcribeAudio: (params: any) => Promise<string>;
       resize: (width: number, height: number) => void;
+      setContentProtection?: (enable: boolean) => void;
     };
   }
 }
