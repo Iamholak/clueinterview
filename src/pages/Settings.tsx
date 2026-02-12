@@ -37,8 +37,19 @@ export default function Settings() {
   const [transcriptionProvider, setTranscriptionProvider] = useState(() => localStorage.getItem('transcription_provider') || 'openai');
   const [whisperApiKey, setWhisperApiKey] = useState(() => localStorage.getItem('whisper_api_key') || '');
   const [whisperBaseUrl, setWhisperBaseUrl] = useState(() => localStorage.getItem('whisper_base_url') || 'https://api.openai.com/v1');
+  const [screenCapturePermission, setScreenCapturePermission] = useState(() => localStorage.getItem('screen_capture_permission') === 'true');
 
   // Load saved APIs
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        window.history.back();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   useEffect(() => {
     const savedApis = localStorage.getItem('api_configs');
     const savedActiveId = localStorage.getItem('active_api_id');
@@ -119,6 +130,7 @@ export default function Settings() {
     localStorage.setItem('transcription_provider', transcriptionProvider);
     localStorage.setItem('whisper_api_key', whisperApiKey);
     localStorage.setItem('whisper_base_url', whisperBaseUrl);
+    localStorage.setItem('screen_capture_permission', String(screenCapturePermission));
 
     setSaveStatus('saved');
     setTimeout(() => setSaveStatus('idle'), 2000);
@@ -149,8 +161,9 @@ export default function Settings() {
     localStorage.setItem('transcription_provider', transcriptionProvider);
     localStorage.setItem('whisper_api_key', whisperApiKey);
     localStorage.setItem('whisper_base_url', whisperBaseUrl);
+    localStorage.setItem('screen_capture_permission', String(screenCapturePermission));
 
-  }, [apis, activeApiId, transcriptionProvider, whisperApiKey, whisperBaseUrl]);
+  }, [apis, activeApiId, transcriptionProvider, whisperApiKey, whisperBaseUrl, screenCapturePermission]);
 
   const addApi = () => {
     const newApi: ApiConfig = {
@@ -501,6 +514,34 @@ export default function Settings() {
             </div>
 
             <div className="section-title">System Permissions & Data</div>
+            <div style={{marginBottom: '20px', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px'}}>
+                <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
+                    <div>
+                        <div style={{fontWeight: 'bold', marginBottom: '4px'}}>
+                            Screen Reading Capability
+                        </div>
+                        <div style={{fontSize: '0.8rem', color: '#aaa'}}>
+                            Allow the app to capture your screen to read puzzles, code tasks, or questions.
+                        </div>
+                    </div>
+                    <button 
+                        onClick={() => setScreenCapturePermission(!screenCapturePermission)}
+                        style={{
+                            padding: '8px 16px',
+                            background: screenCapturePermission ? '#00ff9d' : '#444',
+                            color: screenCapturePermission ? '#000' : '#fff',
+                            border: 'none',
+                            borderRadius: '4px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            minWidth: '100px'
+                        }}
+                    >
+                        {screenCapturePermission ? "Allowed" : "Grant Access"}
+                    </button>
+                </div>
+            </div>
+
             <div style={{display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap'}}>
                 <button 
                     onClick={checkMicPermission}
@@ -772,7 +813,7 @@ export default function Settings() {
                 {saveStatus === 'saved' ? 'Settings Saved!' : 'Save Settings'}
              </button>
              <p style={{fontSize: '0.8rem', color: '#666', textAlign: 'center'}}>
-                ClueInterview v1.1.0 - Multi-API Support
+                ClueInterview v1.2.0 - Multi-API Support & Vision
              </p>
           </div>
         </div>

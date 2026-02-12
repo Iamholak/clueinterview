@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('electron', {
   askAI: (params) => ipcRenderer.invoke('ask-ai', params),
   transcribeAudio: (params) => ipcRenderer.invoke('transcribe-audio', params),
   resize: (width, height) => ipcRenderer.send('resize-window', { width, height }),
+  toggleWindow: () => ipcRenderer.send('toggle-window'),
+  captureScreen: () => ipcRenderer.invoke('capture-screen'),
 });
 
 window.addEventListener('DOMContentLoaded', () => {

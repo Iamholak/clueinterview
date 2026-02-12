@@ -92,21 +92,55 @@ function createWindow() {
   });
 
   // IPC Listeners
+  ipcMain.on('toggle-window', () => {
+    if (win.isVisible()) {
+      win.hide();
+    } else {
+      win.show();
+    }
+  });
+
+  ipcMain.handle('capture-screen', async () => {
+    const { desktopCapturer } = require('electron');
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1920, height: 1080 } });
+    // For simplicity, capture the first screen
+    if (sources.length > 0) {
+      return sources[0].thumbnail.toDataURL();
+    }
+    return null;
+  });
+
   ipcMain.handle('ask-ai', async (event, { apiKey, baseUrl, model, messages, systemPrompt }) => {
     try {
+      // Check if any message contains an image (for screen capture analysis)
+      const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'));
+
       // Check for Google Gemini
       if (baseUrl.includes('generativelanguage.googleapis.com') || model.includes('gemini')) {
           const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
-          // Construct URL: https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=API_KEY
           const url = `${cleanBaseUrl}/models/${model}:generateContent?key=${apiKey}`;
           
-          // Convert messages to Gemini format
-          // Gemini uses 'user' and 'model' roles. System prompt is often separate or merged.
-          // Gemini 1.5 supports system_instruction.
-          
           const contents = messages.map(msg => {
-              // Map 'assistant' to 'model'
               const role = msg.role === 'assistant' ? 'model' : 'user';
+              
+              // Handle vision/image parts for Gemini
+              if (Array.isArray(msg.content)) {
+                  const parts = msg.content.map(part => {
+                      if (part.type === 'image_url') {
+                          // Extract base64 from data:image/png;base64,...
+                          const base64Data = part.image_url.url.split(',')[1];
+                          return {
+                              inline_data: {
+                                  mime_type: "image/png",
+                                  data: base64Data
+                              }
+                          };
+                      }
+                      return { text: part.text };
+                  });
+                  return { role, parts };
+              }
+
               return {
                   role: role,
                   parts: [{ text: msg.content }]
@@ -132,14 +166,17 @@ function createWindow() {
           }
 
           const data = await response.json();
-          // Gemini response structure: candidates[0].content.parts[0].text
           return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       }
 
       // OpenAI / Standard Logic
       const finalMessages = [
         { role: 'system', content: systemPrompt },
-        ...messages
+        ...messages.map(m => {
+          // Flatten content for non-vision models if necessary, 
+          // but GPT-4o supports the array format directly.
+          return m;
+        })
       ];
       
       // Ensure no trailing slashes in base URL if we are appending /chat/completions

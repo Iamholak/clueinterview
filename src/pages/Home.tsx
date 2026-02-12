@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import OpenAI from 'openai';
-import { Mic, MicOff, Monitor, User, Send, PlusCircle, Copy, Check } from 'lucide-react';
+import { Mic, MicOff, Monitor, User, Send, PlusCircle, Copy, Check, Camera } from 'lucide-react';
 import Header from '../components/Header';
 // ... (Keep existing Type definitions for Web Speech API from App.tsx)
 interface SpeechRecognition extends EventTarget {
@@ -72,6 +72,112 @@ export default function Home() {
   const [manualInput, setManualInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [showCodeBlocks, setShowCodeBlocks] = useState(true);
+  const [isCapturing, setIsCapturing] = useState(false);
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+
+      // Ctrl/Cmd + K: Clear chat
+      if (isCmdOrCtrl && e.key === 'k') {
+        e.preventDefault();
+        handleNewSession();
+      }
+
+      // Ctrl/Cmd + L: Toggle code block
+      if (isCmdOrCtrl && e.key === 'l') {
+        e.preventDefault();
+        setShowCodeBlocks(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleCaptureScreen = async () => {
+    const hasPermission = localStorage.getItem('screen_capture_permission') === 'true';
+    if (!hasPermission) {
+      setMessages(prev => [...prev, { type: 'ai', text: 'Screen capture permission is not granted. Please enable it in Settings.' }]);
+      return;
+    }
+
+    if (window.electron && window.electron.captureScreen) {
+      setIsCapturing(true);
+      try {
+        // Hide window briefly to capture what's behind it
+        if (window.electron.toggleWindow) window.electron.toggleWindow();
+        
+        // Wait for window to hide
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        const screenshotData = await window.electron.captureScreen();
+        
+        // Show window back
+        if (window.electron.toggleWindow) window.electron.toggleWindow();
+
+        if (screenshotData) {
+          setMessages(prev => [...prev, { type: 'context', text: '[Screen Captured: Analyzing puzzle/question...]' }]);
+          
+          // Send to AI for analysis
+          // We'll add the image data to the AI request if supported, or just describe it
+          // For now, let's assume we want to send the image to the AI
+          analyzeImage(screenshotData);
+        }
+      } catch (err) {
+        console.error("Screen capture error:", err);
+      } finally {
+        setIsCapturing(false);
+      }
+    }
+  };
+
+  const analyzeImage = async (base64Image: string) => {
+    setLoading(true);
+    const apiKey = (localStorage.getItem('openai_api_key') || '').trim();
+    const rawBaseUrl = localStorage.getItem('openai_base_url') || 'https://api.openai.com/v1';
+    const baseUrl = rawBaseUrl.trim();
+    const model = (localStorage.getItem('openai_model') || 'gpt-4o').trim();
+
+    if (!apiKey) {
+      setMessages(prev => [...prev, { type: 'ai', text: 'Please configure your API Key in Settings.' }]);
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const systemPrompt = `You are an expert technical interviewer. I will provide you with a screenshot of a puzzle, code task, or question. Please extract the text and solve it concisely.`;
+      
+      // Check if Electron askAI is available
+      if (window.electron && window.electron.askAI) {
+        // We need to modify askAI to handle images or send as a special message
+        // For now, let's just send the intent
+        const answer = await window.electron.askAI({
+          apiKey,
+          baseUrl,
+          model,
+          messages: [
+            { 
+              role: 'user', 
+              content: [
+                { type: 'text', text: 'What is shown in this image? If it is a coding task or puzzle, please solve it.' },
+                { type: 'image_url', image_url: { url: base64Image } }
+              ] 
+            }
+          ],
+          systemPrompt
+        });
+        setMessages(prev => [...prev, { type: 'ai', text: answer }]);
+      }
+    } catch (err: any) {
+      console.error("Image analysis error:", err);
+      setMessages(prev => [...prev, { type: 'ai', text: 'Error analyzing screen: ' + err.message }]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleCopy = (text: string, index: number) => {
     navigator.clipboard.writeText(text);
@@ -686,7 +792,21 @@ export default function Home() {
     <>
       <Header title={
         <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%'}}>
-            <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+          <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+            <PlusCircle 
+              size={20} 
+              style={{cursor: 'pointer', color: '#00f3ff'}} 
+              onClick={handleNewSession}
+              title="New Session (Ctrl+K)"
+            />
+            <Camera
+              size={20}
+              style={{cursor: 'pointer', color: isCapturing ? '#ff5555' : '#00f3ff'}}
+              onClick={handleCaptureScreen}
+              title="Capture Screen"
+            />
+          </div>
+          <div style={{display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer'}} onClick={() => setSpeakerMode(speakerMode === 'interviewer' ? 'me' : 'interviewer')}>
                 Live Interview
                 {isListening ? (
                     <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}>
