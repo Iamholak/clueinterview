@@ -6,17 +6,30 @@ import { useNavigate } from 'react-router-dom';
 export default function Profile() {
   const [resume, setResume] = useState(localStorage.getItem('user_resume') || '');
   const [saved, setSaved] = useState(false);
-  const [history, setHistory] = useState<any[]>([]);
+
+  interface HistoryMessage {
+    type: 'user' | 'ai' | 'context';
+    text: string;
+  }
+
+  interface HistoryItem {
+    id: string;
+    date: string;
+    messages: HistoryMessage[];
+  }
+
+  const [history, setHistory] = useState<HistoryItem[]>(() => {
+    const savedHistory = localStorage.getItem('interview_history');
+    if (!savedHistory) return [];
+    try {
+      const parsed = JSON.parse(savedHistory) as HistoryItem[];
+      return parsed.slice().reverse();
+    } catch {
+      return [];
+    }
+  });
   const [activeTab, setActiveTab] = useState<'resume' | 'history'>('resume');
   const navigate = useNavigate();
-
-  useEffect(() => {
-    // Load history
-    const savedHistory = localStorage.getItem('interview_history');
-    if (savedHistory) {
-        setHistory(JSON.parse(savedHistory).reverse()); // Newest first
-    }
-  }, []);
 
   useEffect(() => {
     if (saved) {
@@ -37,7 +50,7 @@ export default function Profile() {
       }
   };
 
-  const loadSession = (session: any) => {
+  const loadSession = (session: HistoryItem) => {
         // Just load it. The user clicked it intentionally.
         // If we really want safety, we can check if current session has messages.
         // But for "High Priority" fix of "not working", removing blocking confirm is best.
@@ -48,7 +61,7 @@ export default function Profile() {
   const formatDate = (dateString: string) => {
       try {
           return new Date(dateString).toLocaleString();
-      } catch (e) {
+      } catch {
           return dateString;
       }
   };
@@ -180,7 +193,7 @@ export default function Profile() {
                                         </div>
                                     </div>
                                     <div style={{maxHeight: '150px', overflowY: 'auto', fontSize: '0.85rem', color: '#ddd'}}>
-                                        {item.messages.slice(0, 3).map((m: any, i: number) => (
+                                        {item.messages.slice(0, 3).map((m: HistoryMessage, i: number) => (
                                             <div key={i} style={{marginBottom: '4px', opacity: 0.8}}>
                                                 <strong>{m.type === 'user' ? 'Interviewer: ' : m.type === 'context' ? 'Me: ' : 'AI: '}</strong>
                                                 {m.text.substring(0, 60)}...

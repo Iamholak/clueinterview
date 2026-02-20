@@ -11,6 +11,26 @@ interface ApiConfig {
   model: string;
 }
 
+interface PromptTemplate {
+  id: string;
+  name: string;
+  category: string;
+  content: string;
+}
+
+interface PromptDefaults {
+  interviewerId?: string;
+  meId?: string;
+}
+
+interface CodeEnvironmentConfig {
+  primaryLanguage: string;
+  secondaryLanguages: string;
+  enableSyntaxHighlighting: boolean;
+  enableErrorDetection: boolean;
+  enableCompletionSuggestions: boolean;
+}
+
 /*
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
@@ -20,8 +40,8 @@ interface SpeechRecognition extends EventTarget {
   start(): void;
   stop(): void;
   abort(): void;
-  onresult: (event: any) => void;
-  onerror: (event: any) => void;
+  onresult: (event: SpeechRecognitionEvent) => void;
+  onerror: (event: SpeechRecognitionErrorEvent) => void;
   onend: () => void;
 }
 */
@@ -29,8 +49,48 @@ interface SpeechRecognition extends EventTarget {
 // Global types defined in src/types.d.ts
 
 export default function Settings() {
-  const [apis, setApis] = useState<ApiConfig[]>([]);
-  const [activeApiId, setActiveApiId] = useState('');
+  const [apis, setApis] = useState<ApiConfig[]>(() => {
+    const savedApis = localStorage.getItem('api_configs');
+    if (savedApis) {
+      try {
+        const parsed = JSON.parse(savedApis) as ApiConfig[];
+        if (parsed.length > 0) {
+          return parsed;
+        }
+      } catch (error) {
+        console.error('Failed to parse api_configs from storage', error);
+      }
+    }
+
+    const defaultApi: ApiConfig = {
+      id: '1',
+      name: 'OpenAI Default',
+      provider: 'openai',
+      apiKey: localStorage.getItem('openai_api_key') || '',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o'
+    };
+    return [defaultApi];
+  });
+  const [activeApiId, setActiveApiId] = useState(() => {
+    const savedActiveId = localStorage.getItem('active_api_id');
+    if (savedActiveId) {
+      return savedActiveId;
+    }
+    const savedApis = localStorage.getItem('api_configs');
+    if (savedApis) {
+      try {
+        const parsed = JSON.parse(savedApis) as ApiConfig[];
+        if (parsed.length > 0) {
+          return parsed[0].id;
+        }
+      } catch (error) {
+        console.error('Failed to parse api_configs for active id', error);
+      }
+    }
+    return '1';
+  });
+  const [updateStatus, setUpdateStatus] = useState<{status: 'idle' | 'checking' | 'available' | 'latest' | 'error', message?: string}>({status: 'idle'});
   
   // Lazy init to prevent overwriting saved settings with defaults on first render
   const [useWhisper, setUseWhisper] = useState(() => localStorage.getItem('use_whisper_stt') === 'true');
@@ -38,8 +98,15 @@ export default function Settings() {
   const [whisperApiKey, setWhisperApiKey] = useState(() => localStorage.getItem('whisper_api_key') || '');
   const [whisperBaseUrl, setWhisperBaseUrl] = useState(() => localStorage.getItem('whisper_base_url') || 'https://api.openai.com/v1');
   const [screenCapturePermission, setScreenCapturePermission] = useState(() => localStorage.getItem('screen_capture_permission') === 'true');
+  const [isInvisible, setIsInvisible] = useState(() => {
+    const savedInvisibility = localStorage.getItem('app_invisibility');
+    if (savedInvisibility === null) {
+      return true;
+    }
+    return savedInvisibility === 'true';
+  }); // Default true (Stealth)
 
-  // Load saved APIs
+  // Keyboard shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -51,41 +118,21 @@ export default function Settings() {
   }, []);
 
   useEffect(() => {
-    const savedApis = localStorage.getItem('api_configs');
-    const savedActiveId = localStorage.getItem('active_api_id');
-    
-    if (savedApis) {
-      setApis(JSON.parse(savedApis));
-    } else {
-      // Default initial config if empty
-      const defaultApi: ApiConfig = {
-        id: '1',
-        name: 'OpenAI Default',
-        provider: 'openai',
-        apiKey: localStorage.getItem('openai_api_key') || '',
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-4o'
-      };
-      setApis([defaultApi]);
-      setActiveApiId('1');
+    if (window.electron && window.electron.setContentProtection) {
+      window.electron.setContentProtection(isInvisible);
     }
+  }, [isInvisible]);
 
-    if (savedActiveId) {
-      setActiveApiId(savedActiveId);
-    }
-    
-    // Load Invisibility setting
-    const savedInvisibility = localStorage.getItem('app_invisibility');
-    if (savedInvisibility !== null) {
-        const isInvisible = savedInvisibility === 'true';
-        setIsInvisible(isInvisible);
-        if (window.electron && window.electron.setContentProtection) {
-            window.electron.setContentProtection(isInvisible);
-        }
-    }
-  }, []);
-
-  const [isInvisible, setIsInvisible] = useState(true); // Default true (Stealth)
+  const [transparencyEnabled, setTransparencyEnabled] = useState(() => localStorage.getItem('transparency_enabled') === 'true');
+  const [transparencyLevel, setTransparencyLevel] = useState(() => {
+    const stored = localStorage.getItem('transparency_level');
+    if (!stored) return 0;
+    const parsed = parseInt(stored, 10);
+    if (Number.isNaN(parsed)) return 0;
+    if (parsed < 0) return 0;
+    if (parsed > 80) return 80;
+    return parsed;
+  });
 
   const toggleInvisibility = () => {
       const newState = !isInvisible;
@@ -185,6 +232,123 @@ export default function Settings() {
   const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
 
+  const [codeEnv, setCodeEnv] = useState<CodeEnvironmentConfig>(() => {
+    const stored = localStorage.getItem('code_env_config');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as CodeEnvironmentConfig;
+        return {
+          primaryLanguage: parsed.primaryLanguage || 'TypeScript',
+          secondaryLanguages: parsed.secondaryLanguages || 'JavaScript, Python',
+          enableSyntaxHighlighting: parsed.enableSyntaxHighlighting ?? true,
+          enableErrorDetection: parsed.enableErrorDetection ?? true,
+          enableCompletionSuggestions: parsed.enableCompletionSuggestions ?? true,
+        };
+      } catch {
+        return {
+          primaryLanguage: 'TypeScript',
+          secondaryLanguages: 'JavaScript, Python',
+          enableSyntaxHighlighting: true,
+          enableErrorDetection: true,
+          enableCompletionSuggestions: true,
+        };
+      }
+    }
+    return {
+      primaryLanguage: 'TypeScript',
+      secondaryLanguages: 'JavaScript, Python',
+      enableSyntaxHighlighting: true,
+      enableErrorDetection: true,
+      enableCompletionSuggestions: true,
+    };
+  });
+
+  const [prompts, setPrompts] = useState<PromptTemplate[]>(() => {
+    const stored = localStorage.getItem('prompt_templates');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as { prompts?: PromptTemplate[]; defaults?: PromptDefaults };
+        if (parsed.prompts && Array.isArray(parsed.prompts) && parsed.prompts.length > 0) {
+          return parsed.prompts;
+        }
+      } catch (error) {
+        console.error('Failed to parse prompt templates from storage', error);
+      }
+    }
+    const initialPrompts: PromptTemplate[] = [
+      {
+        id: 'interview-coach-default',
+        name: 'Interview Coach',
+        category: 'Interview',
+        content:
+          'You are an expert interview coach.\n\n' +
+          'Your role is to listen to the live interview and help the candidate.\n' +
+          'When you receive messages tagged as Interviewer, respond with a direct, polished answer the candidate can say.\n' +
+          'When you receive messages tagged as Me, briefly critique the answer and suggest improvements.\n' +
+          'Be concise and prioritize information from the candidate resume below.\n' +
+          'Candidate Resume:\n{{RESUME}}',
+      },
+      {
+        id: 'me-mode-assistant-default',
+        name: 'Me Mode Assistant',
+        category: 'Assistant',
+        content:
+          'You are a helpful AI assistant for the user.\n' +
+          'Answer the user questions directly and clearly.\n' +
+          'When relevant, provide code examples and short explanations.\n' +
+          'Assume the user is preparing for technical interviews.\n' +
+          'Candidate Resume:\n{{RESUME}}',
+      },
+      {
+        id: 'code-analysis-default',
+        name: 'Code Analysis',
+        category: 'Code',
+        content:
+          'You analyze code for correctness, style, and performance.\n' +
+          'Explain errors, suggest fixes, and propose improved implementations.\n' +
+          'When showing code, use Markdown code fences with language identifiers.\n' +
+          'Candidate Resume:\n{{RESUME}}',
+      },
+    ];
+    const initialDefaults: PromptDefaults = {
+      interviewerId: 'interview-coach-default',
+      meId: 'me-mode-assistant-default',
+    };
+    const config = { prompts: initialPrompts, defaults: initialDefaults };
+    localStorage.setItem('prompt_templates', JSON.stringify(config));
+    return initialPrompts;
+  });
+
+  const [promptDefaults, setPromptDefaults] = useState<PromptDefaults>(() => {
+    const stored = localStorage.getItem('prompt_templates');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as { prompts?: PromptTemplate[]; defaults?: PromptDefaults };
+        return parsed.defaults || {};
+      } catch {
+        return {};
+      }
+    }
+    return {
+      interviewerId: 'interview-coach-default',
+      meId: 'me-mode-assistant-default',
+    };
+  });
+
+  const [activePromptId, setActivePromptId] = useState(() => {
+    const stored = localStorage.getItem('prompt_templates');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as { prompts?: PromptTemplate[]; defaults?: PromptDefaults };
+        const list = parsed.prompts || [];
+        if (list.length > 0) return list[0].id;
+      } catch {
+        return prompts[0]?.id || '';
+      }
+    }
+    return prompts[0]?.id || '';
+  });
+
   // Load devices and selected mic
   useEffect(() => {
       const getDevices = async () => {
@@ -217,6 +381,30 @@ export default function Settings() {
       setSelectedDeviceId(deviceId);
       localStorage.setItem('selected_mic_id', deviceId);
   };
+
+  useEffect(() => {
+    const config: CodeEnvironmentConfig = {
+      primaryLanguage: codeEnv.primaryLanguage,
+      secondaryLanguages: codeEnv.secondaryLanguages,
+      enableSyntaxHighlighting: codeEnv.enableSyntaxHighlighting,
+      enableErrorDetection: codeEnv.enableErrorDetection,
+      enableCompletionSuggestions: codeEnv.enableCompletionSuggestions,
+    };
+    localStorage.setItem('code_env_config', JSON.stringify(config));
+  }, [codeEnv]);
+
+  useEffect(() => {
+    const config = { prompts, defaults: promptDefaults };
+    localStorage.setItem('prompt_templates', JSON.stringify(config));
+  }, [prompts, promptDefaults]);
+
+  useEffect(() => {
+    localStorage.setItem('transparency_enabled', String(transparencyEnabled));
+    localStorage.setItem('transparency_level', String(transparencyLevel));
+    if (window.electron && window.electron.setTransparency) {
+      window.electron.setTransparency(transparencyEnabled, transparencyLevel);
+    }
+  }, [transparencyEnabled, transparencyLevel]);
 
   const requestMicrophone = async () => {
     try {
@@ -281,6 +469,43 @@ export default function Settings() {
     }
   };
 
+  const activePrompt = prompts.find(p => p.id === activePromptId) || prompts[0] || null;
+
+  const addPrompt = () => {
+    const id = Date.now().toString();
+    const newPrompt: PromptTemplate = {
+      id,
+      name: 'New Prompt',
+      category: 'General',
+      content: '',
+    };
+    setPrompts([...prompts, newPrompt]);
+    setActivePromptId(id);
+  };
+
+  const removePrompt = (id: string) => {
+    const remaining = prompts.filter(p => p.id !== id);
+    setPrompts(remaining);
+    setPromptDefaults(prev => {
+      const next: PromptDefaults = { ...prev };
+      if (next.interviewerId === id) {
+        next.interviewerId = undefined;
+      }
+      if (next.meId === id) {
+        next.meId = undefined;
+      }
+      return next;
+    });
+    if (activePromptId === id) {
+      setActivePromptId(remaining[0]?.id || '');
+    }
+  };
+
+  const updatePromptField = (field: keyof PromptTemplate, value: string) => {
+    if (!activePrompt) return;
+    setPrompts(prompts.map(p => (p.id === activePrompt.id ? { ...p, [field]: value } : p)));
+  };
+
   const testWhisperCapture = async () => {
     try {
         setMediaRecorderTestResult("Initializing MediaRecorder...");
@@ -311,22 +536,41 @@ export default function Settings() {
             }
         }, 3000);
 
-    } catch (err: any) {
+    } catch (err) {
         console.error(err);
-        setMediaRecorderTestResult(`Error: ${err.message || err}`);
+        const message = err instanceof Error ? err.message : String(err);
+        setMediaRecorderTestResult(`Error: ${message}`);
     }
   };
 
     // Cleanup on unmount
     useEffect(() => {
         return () => {
-            if ((window as any).testRecognition) {
+            if (window.testRecognition) {
                 try {
-                    (window as any).testRecognition.stop();
-                } catch (e) {}
+                    window.testRecognition.stop();
+                } catch {
+                    void 0;
+                }
             }
         };
     }, []);
+
+  const handleCheckUpdates = async () => {
+    if (!window.electron || !window.electron.checkForUpdates) return;
+    
+    setUpdateStatus({status: 'checking', message: 'Checking for updates...'});
+    try {
+      const result = await window.electron.checkForUpdates();
+      if (result.success) {
+        setUpdateStatus({status: 'available', message: 'Update check complete. If a new version is available, it will download automatically.'});
+      } else {
+        setUpdateStatus({status: 'error', message: result.error || 'Failed to check for updates.'});
+      }
+    } catch {
+      setUpdateStatus({status: 'error', message: 'Error checking for updates.'});
+    }
+  };
 
   const removeApi = (id: string) => {
     if (apis.length <= 1) return; // Prevent deleting last one
@@ -341,7 +585,7 @@ export default function Settings() {
     try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
         alert("Microphone permission granted!");
-    } catch (err) {
+    } catch {
         alert("Microphone permission denied. Please check your system settings.");
     }
   };
@@ -417,6 +661,54 @@ export default function Settings() {
                     >
                         {isInvisible ? "Make Visible" : "Make Invisible"}
                     </button>
+                </div>
+            </div>
+
+            <div className="section-title">Window Transparency</div>
+            <div style={{marginBottom: '20px', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px'}}>
+                <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px'}}>
+                    <div>
+                        <div style={{fontWeight: 'bold', marginBottom: '4px'}}>
+                            {transparencyEnabled ? "Transparent Mode Enabled" : "Transparent Mode Disabled"}
+                        </div>
+                        <div style={{fontSize: '0.8rem', color: '#aaa'}}>
+                            {transparencyEnabled
+                                ? "The window uses partial transparency so you can see content behind it."
+                                : "The window is fully opaque for maximum readability."}
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => setTransparencyEnabled(!transparencyEnabled)}
+                        style={{
+                            padding: '8px 16px',
+                            background: transparencyEnabled ? '#00f3ff' : '#444',
+                            color: transparencyEnabled ? '#000' : '#fff',
+                            border: 'none',
+                            borderRadius: '4px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            minWidth: '120px'
+                        }}
+                    >
+                        {transparencyEnabled ? "Disable" : "Enable"}
+                    </button>
+                </div>
+                <div>
+                    <label style={{display: 'block', marginBottom: '6px', fontSize: '0.8rem'}}>
+                        Transparency Level
+                    </label>
+                    <input
+                        type="range"
+                        min={0}
+                        max={80}
+                        step={5}
+                        value={transparencyLevel}
+                        onChange={(e) => setTransparencyLevel(Number(e.target.value))}
+                        style={{width: '100%'}}
+                    />
+                    <div style={{fontSize: '0.8rem', color: '#aaa', marginTop: '4px'}}>
+                        {transparencyLevel}% transparent (0% = fully opaque, 80% = highly transparent)
+                    </div>
                 </div>
             </div>
 
@@ -653,7 +945,207 @@ export default function Settings() {
                 </div>
             </div>
 
-            <div className="section-title">API Configuration</div>
+          <div className="section-title">Code Environment</div>
+          <div style={{marginBottom: '20px', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px'}}>
+            <div className="form-group">
+              <label>Primary Language</label>
+              <select
+                className="form-control"
+                value={codeEnv.primaryLanguage}
+                onChange={(e) => setCodeEnv({...codeEnv, primaryLanguage: e.target.value})}
+              >
+                <option value="TypeScript">TypeScript</option>
+                <option value="JavaScript">JavaScript</option>
+                <option value="Python">Python</option>
+                <option value="Java">Java</option>
+                <option value="C#">C#</option>
+                <option value="Go">Go</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Other Languages</label>
+              <input
+                type="text"
+                className="form-control"
+                value={codeEnv.secondaryLanguages}
+                onChange={(e) => setCodeEnv({...codeEnv, secondaryLanguages: e.target.value})}
+                placeholder="JavaScript, Python"
+              />
+            </div>
+            <div style={{display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px'}}>
+              <label style={{display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem'}}>
+                <input
+                  type="checkbox"
+                  checked={codeEnv.enableSyntaxHighlighting}
+                  onChange={(e) => setCodeEnv({...codeEnv, enableSyntaxHighlighting: e.target.checked})}
+                  style={{margin: 0}}
+                />
+                Enable syntax-focused code output
+              </label>
+              <label style={{display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem'}}>
+                <input
+                  type="checkbox"
+                  checked={codeEnv.enableErrorDetection}
+                  onChange={(e) => setCodeEnv({...codeEnv, enableErrorDetection: e.target.checked})}
+                  style={{margin: 0}}
+                />
+                Emphasize error detection and debugging hints
+              </label>
+              <label style={{display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem'}}>
+                <input
+                  type="checkbox"
+                  checked={codeEnv.enableCompletionSuggestions}
+                  onChange={(e) => setCodeEnv({...codeEnv, enableCompletionSuggestions: e.target.checked})}
+                  style={{margin: 0}}
+                />
+                Include completion-style code suggestions
+              </label>
+            </div>
+          </div>
+
+          <div className="section-title">Prompt Management</div>
+          <div style={{marginBottom: '20px', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px'}}>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
+              <div style={{fontSize: '0.8rem', color: '#aaa'}}>
+                Create, edit, and organize prompts for different interaction modes.
+              </div>
+              <button
+                onClick={addPrompt}
+                style={{
+                  padding: '6px 10px',
+                  background: 'rgba(0, 243, 255, 0.1)',
+                  border: '1px solid #00f3ff',
+                  borderRadius: '6px',
+                  color: '#00f3ff',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem'
+                }}
+              >
+                + New Prompt
+              </button>
+            </div>
+            {prompts.length > 0 && (
+              <div style={{display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '8px', marginBottom: '10px'}}>
+                {prompts.map(prompt => (
+                  <button
+                    key={prompt.id}
+                    onClick={() => setActivePromptId(prompt.id)}
+                    style={{
+                      flex: '0 0 auto',
+                      padding: '6px 10px',
+                      borderRadius: '8px',
+                      border: `1px solid ${activePrompt && activePrompt.id === prompt.id ? '#00f3ff' : 'rgba(255,255,255,0.1)'}`,
+                      background: activePrompt && activePrompt.id === prompt.id ? 'rgba(0,243,255,0.1)' : 'rgba(0,0,0,0.2)',
+                      color: activePrompt && activePrompt.id === prompt.id ? '#fff' : '#888',
+                      fontSize: '0.8rem',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {prompt.name || 'Untitled'}{prompt.category ? ` (${prompt.category})` : ''}
+                  </button>
+                ))}
+              </div>
+            )}
+            {activePrompt && (
+              <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
+                <div className="form-group">
+                  <label>Prompt Name</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={activePrompt.name}
+                    onChange={(e) => updatePromptField('name', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Category</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={activePrompt.category}
+                    onChange={(e) => updatePromptField('category', e.target.value)}
+                    placeholder="Interview, Code, Debugging"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Prompt Text</label>
+                  <textarea
+                    className="form-control"
+                    value={activePrompt.content}
+                    onChange={(e) => updatePromptField('content', e.target.value)}
+                    style={{minHeight: '140px', resize: 'vertical'}}
+                  />
+                  <div style={{fontSize: '0.75rem', color: '#888', marginTop: '4px'}}>
+                    You can use {'{{RESUME}}'} to insert the saved resume.
+                  </div>
+                </div>
+                {prompts.length > 1 && (
+                  <button
+                    onClick={() => removePrompt(activePrompt.id)}
+                    style={{
+                      alignSelf: 'flex-start',
+                      padding: '8px 12px',
+                      background: 'rgba(255,50,50,0.15)',
+                      borderRadius: '6px',
+                      border: '1px solid rgba(255,50,50,0.4)',
+                      color: '#ff5555',
+                      cursor: 'pointer',
+                      fontSize: '0.8rem'
+                    }}
+                  >
+                    Delete Prompt
+                  </button>
+                )}
+              </div>
+            )}
+            {prompts.length > 0 && (
+              <div style={{marginTop: '12px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.1)'}}>
+                <div className="form-group">
+                  <label>Default for Interviewer Mode</label>
+                  <select
+                    className="form-control"
+                    value={promptDefaults.interviewerId || ''}
+                    onChange={(e) =>
+                      setPromptDefaults({
+                        ...promptDefaults,
+                        interviewerId: e.target.value || undefined,
+                      })
+                    }
+                  >
+                    <option value="">Use built-in default</option>
+                    {prompts.map(prompt => (
+                      <option key={prompt.id} value={prompt.id}>
+                        {prompt.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Default for Me Mode</label>
+                  <select
+                    className="form-control"
+                    value={promptDefaults.meId || ''}
+                    onChange={(e) =>
+                      setPromptDefaults({
+                        ...promptDefaults,
+                        meId: e.target.value || undefined,
+                      })
+                    }
+                  >
+                    <option value="">Use built-in default</option>
+                    {prompts.map(prompt => (
+                      <option key={prompt.id} value={prompt.id}>
+                        {prompt.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="section-title">API Configuration</div>
           {/* API Selector / List */}
           <div className="form-group">
             <label style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
@@ -794,7 +1286,39 @@ export default function Settings() {
                 </div>
             )}
           </div>
-          
+
+          <div style={{borderTop: '1px solid rgba(255,255,255,0.1)', margin: '20px 0'}}></div>
+
+          <div className="section-title">Application</div>
+          <div className="form-group" style={{marginTop: '10px'}}>
+            <button 
+                onClick={handleCheckUpdates}
+                disabled={updateStatus.status === 'checking'}
+                style={{
+                    width: '100%',
+                    padding: '10px',
+                    background: updateStatus.status === 'checking' ? '#555' : 'rgba(0, 243, 255, 0.1)',
+                    border: '1px solid #00f3ff',
+                    color: '#00f3ff',
+                    borderRadius: '8px',
+                    cursor: updateStatus.status === 'checking' ? 'default' : 'pointer',
+                    fontSize: '0.85rem'
+                }}
+            >
+                {updateStatus.status === 'checking' ? 'Checking...' : 'Check for Updates'}
+            </button>
+            {updateStatus.message && (
+                <div style={{
+                    marginTop: '8px',
+                    fontSize: '0.75rem',
+                    color: updateStatus.status === 'error' ? '#ff5555' : '#00f3ff',
+                    textAlign: 'center'
+                }}>
+                    {updateStatus.message}
+                </div>
+            )}
+          </div>
+
           <div className="section" style={{marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '10px'}}>
              <button 
                 onClick={handleSave}

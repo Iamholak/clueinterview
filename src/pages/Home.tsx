@@ -1,5 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
-import OpenAI from 'openai';
+import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Monitor, User, Send, PlusCircle, Copy, Check, Camera } from 'lucide-react';
 import Header from '../components/Header';
 // ... (Keep existing Type definitions for Web Speech API from App.tsx)
@@ -10,6 +9,14 @@ interface SpeechRecognition extends EventTarget {
   start(): void;
   stop(): void;
   abort(): void;
+  onstart?: () => void;
+  onaudiostart?: () => void;
+  onsoundstart?: () => void;
+  onspeechstart?: () => void;
+  onspeechend?: () => void;
+  onsoundend?: () => void;
+  onaudioend?: () => void;
+  onnomatch?: () => void;
   onresult: (event: SpeechRecognitionEvent) => void;
   onerror: (event: SpeechRecognitionErrorEvent) => void;
   onend: () => void;
@@ -47,6 +54,104 @@ interface ChatMessage {
   type: 'user' | 'ai' | 'context';
   text: string;
 }
+
+interface PromptTemplate {
+  id: string;
+  name: string;
+  category: string;
+  content: string;
+}
+
+interface PromptDefaults {
+  interviewerId?: string;
+  meId?: string;
+}
+
+interface CodeEnvironmentConfig {
+  primaryLanguage?: string;
+  secondaryLanguages?: string;
+  enableSyntaxHighlighting?: boolean;
+  enableErrorDetection?: boolean;
+  enableCompletionSuggestions?: boolean;
+}
+
+const renderInlineMarkdown = (text: string) => {
+  const parts: (string | React.ReactNode)[] = [];
+  const regex = /(\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    if (token.startsWith('**')) {
+      parts.push(<strong key={`b-${key}`}>{token.slice(2, -2)}</strong>);
+    } else {
+      parts.push(<em key={`i-${key}`}>{token.slice(1, -1)}</em>);
+    }
+    key += 1;
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts;
+};
+
+const renderMessageText = (text: string) => {
+  const lines = text.split('\n');
+  const blocks: React.ReactNode[] = [];
+  let currentList: string[] = [];
+  let inList = false;
+  let key = 0;
+
+  const flushList = () => {
+    if (!inList || currentList.length === 0) return;
+    const listItems = currentList.map((item, index) => (
+      <li key={`li-${key}-${index}`}>{renderInlineMarkdown(item)}</li>
+    ));
+    blocks.push(
+      <ul key={`ul-${key}`}>
+        {listItems}
+      </ul>
+    );
+    key += 1;
+    currentList = [];
+    inList = false;
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^[-*]\s+(.*)$/);
+    if (match) {
+      inList = true;
+      currentList.push(match[1]);
+    } else if (trimmed.length === 0) {
+      flushList();
+    } else {
+      flushList();
+      blocks.push(
+        <p key={`p-${key}`}>
+          {renderInlineMarkdown(line)}
+        </p>
+      );
+      key += 1;
+    }
+  });
+
+  flushList();
+
+  if (blocks.length === 0) {
+    return <p>{renderInlineMarkdown(text)}</p>;
+  }
+
+  return blocks;
+};
 
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
@@ -107,23 +212,9 @@ export default function Home() {
     if (window.electron && window.electron.captureScreen) {
       setIsCapturing(true);
       try {
-        // Hide window briefly to capture what's behind it
-        if (window.electron.toggleWindow) window.electron.toggleWindow();
-        
-        // Wait for window to hide
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
         const screenshotData = await window.electron.captureScreen();
-        
-        // Show window back
-        if (window.electron.toggleWindow) window.electron.toggleWindow();
-
         if (screenshotData) {
           setMessages(prev => [...prev, { type: 'context', text: '[Screen Captured: Analyzing puzzle/question...]' }]);
-          
-          // Send to AI for analysis
-          // We'll add the image data to the AI request if supported, or just describe it
-          // For now, let's assume we want to send the image to the AI
           analyzeImage(screenshotData);
         }
       } catch (err) {
@@ -171,9 +262,10 @@ export default function Home() {
         });
         setMessages(prev => [...prev, { type: 'ai', text: answer }]);
       }
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       console.error("Image analysis error:", err);
-      setMessages(prev => [...prev, { type: 'ai', text: 'Error analyzing screen: ' + err.message }]);
+      setMessages(prev => [...prev, { type: 'ai', text: 'Error analyzing screen: ' + message }]);
     } finally {
       setLoading(false);
     }
@@ -208,7 +300,7 @@ export default function Home() {
         return stored === 'true'; 
     });
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const whisperIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const whisperIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -263,7 +355,7 @@ export default function Home() {
           };
           
           const saved = localStorage.getItem('interview_history');
-          let history = saved ? JSON.parse(saved) : [];
+          const history = saved ? JSON.parse(saved) : [];
           history.push(historyItem);
           localStorage.setItem('interview_history', JSON.stringify(history));
           
@@ -485,42 +577,109 @@ export default function Home() {
     }
 
     try {
-      const systemPrompt = `You are an expert interview coach.
-      
-      Your Role:
-      - Listen to the conversation between the Candidate ("Me") and the Interviewer.
-      - Act as a real-time copilot for the Candidate.
-      
-      Guidelines:
-      1. When the Interviewer speaks (Interviewer: ...):
-         - Provide a DIRECT, high-quality answer that the Candidate can say immediately.
-         - Do not explain *why* it's a good answer, just give the answer.
-         - Keep it natural and professional.
-      
-      2. When the Candidate speaks (Me: ...):
-         - Critique the answer briefly.
-         - Suggest a better version or a follow-up point if the answer was weak.
-         - If the answer was good, suggest a transition to a strength listed in the resume.
-      
-      3. General:
-         - Be concise. The Candidate is in a live interview and cannot read long paragraphs.
-         - Use bullet points if listing key details.
-         - Prioritize information from the Resume below.
-      
-      My Resume:
-      ${resume}
-      
-      Current Conversation:
-      (See messages below)`;
+      const mode: 'interviewer' | 'me' = speakerModeRef.current === 'me' ? 'me' : 'interviewer';
+
+      const codeEnvRaw = localStorage.getItem('code_env_config');
+      let codeEnvText = '';
+      if (codeEnvRaw) {
+        try {
+          const env = JSON.parse(codeEnvRaw) as CodeEnvironmentConfig;
+          const parts: string[] = [];
+          if (env.primaryLanguage) {
+            parts.push(`Primary language: ${env.primaryLanguage}.`);
+          }
+          if (env.secondaryLanguages) {
+            parts.push(`Other languages: ${env.secondaryLanguages}.`);
+          }
+          const features: string[] = [];
+          if (env.enableSyntaxHighlighting) {
+            features.push('syntax-aware code output');
+          }
+          if (env.enableErrorDetection) {
+            features.push('error detection and debugging hints');
+          }
+          if (env.enableCompletionSuggestions) {
+            features.push('completion-style code suggestions');
+          }
+          if (features.length > 0) {
+            parts.push(`When analyzing code, emphasize ${features.join(', ')}.`);
+          }
+          codeEnvText = parts.join(' ');
+        } catch {
+          codeEnvText = '';
+        }
+      }
+
+      const promptConfigRaw = localStorage.getItem('prompt_templates');
+      let systemPrompt = '';
+      if (promptConfigRaw) {
+        try {
+          const parsed = JSON.parse(promptConfigRaw) as { prompts?: PromptTemplate[]; defaults?: PromptDefaults };
+          const list = parsed.prompts || [];
+          const defaults = parsed.defaults || {};
+          const desiredId = mode === 'interviewer' ? defaults.interviewerId : defaults.meId;
+          if (desiredId) {
+            const template = list.find(p => p.id === desiredId);
+            if (template && template.content) {
+              systemPrompt = template.content;
+            }
+          }
+        } catch {
+          systemPrompt = '';
+        }
+      }
+
+      if (!systemPrompt) {
+        if (mode === 'interviewer') {
+          systemPrompt = 
+            'You are an expert interview coach.\n\n' +
+            'Your role is to listen to the live interview and help the candidate.\n' +
+            'When you receive messages tagged as Interviewer, respond with a direct, polished answer the candidate can say.\n' +
+            'When you receive messages tagged as Me, briefly critique the answer and suggest improvements.\n' +
+            'Be concise and prioritize information from the candidate resume below.\n' +
+            'Candidate Resume:\n{{RESUME}}';
+        } else {
+          systemPrompt =
+            'You are an AI assistant helping the user ask questions and solve interview and coding tasks.\n' +
+            'Respond directly to the user with clear, concise answers.\n' +
+            'When relevant, provide code examples and short explanations.\n' +
+            'Assume the user is preparing for technical interviews.\n' +
+            'Candidate Resume:\n{{RESUME}}';
+        }
+      }
+
+      if (resume) {
+        systemPrompt = systemPrompt.replace('{{RESUME}}', resume);
+      } else {
+        systemPrompt = systemPrompt.replace('{{RESUME}}', '(no resume provided)');
+      }
+
+      if (codeEnvText) {
+        systemPrompt += `\n\nCode Environment:\n${codeEnvText}`;
+      }
 
       let answer = '';
 
-      // Prepare messages for API
-      const apiMessages = messages.map(m => ({
-        role: (m.type === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', 
-        content: m.type === 'user' ? `Interviewer: ${m.text}` : m.type === 'context' ? `Me: ${m.text}` : m.text 
-      }));
-      apiMessages.push({ role: 'user', content: `Interviewer: ${userText}` });
+      const apiMessages = messages.map(m => {
+        if (mode === 'interviewer') {
+          const role: 'user' | 'assistant' = m.type === 'ai' ? 'assistant' : 'user';
+          let content = m.text;
+          if (m.type === 'user') {
+            content = `Interviewer: ${m.text}`;
+          } else if (m.type === 'context') {
+            content = `Me: ${m.text}`;
+          }
+          return { role, content };
+        }
+        const role: 'user' | 'assistant' = m.type === 'ai' ? 'assistant' : 'user';
+        return { role, content: m.text };
+      });
+
+      if (mode === 'interviewer') {
+        apiMessages.push({ role: 'user', content: `Interviewer: ${userText}` });
+      } else {
+        apiMessages.push({ role: 'user', content: userText });
+      }
 
       if (window.electron && window.electron.askAI) {
         // Use Electron IPC (No CORS)
@@ -566,37 +725,47 @@ export default function Home() {
              answer = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
              
         } else {
-            // OpenAI / Standard Logic
-            // If using default OpenAI URL on localhost, try to use proxy to avoid CORS
+            // OpenAI / Standard Logic via fetch
             let fetchUrl = baseUrl;
             if (window.location.hostname === 'localhost' && baseUrl.includes('api.openai.com')) {
                if (baseUrl === 'https://api.openai.com/v1') {
-                   fetchUrl = '/v1'; // This will hit the Vite proxy if configured
+                   fetchUrl = '/v1';
                }
             }
-    
-            const client = new OpenAI({
-              apiKey: apiKey,
-              baseURL: fetchUrl, 
-              dangerouslyAllowBrowser: true
+
+            const url = `${fetchUrl.replace(/\/+$/, '')}/chat/completions`;
+
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+              },
+              body: JSON.stringify({
+                model,
+                messages: [
+                  { role: 'system', content: systemPrompt } as const,
+                  ...apiMessages
+                ],
+              }),
             });
-    
-            const completion = await client.chat.completions.create({
-              model: model,
-              messages: [
-                { role: 'system', content: systemPrompt } as const,
-                ...apiMessages
-              ],
-            });
-            answer = completion.choices[0].message.content || 'No response';
+
+            if (!response.ok) {
+              const err = await response.json().catch(() => ({}));
+              throw new Error(err.error?.message || response.statusText);
+            }
+
+            const data = await response.json();
+            answer = data.choices?.[0]?.message?.content || 'No response';
         }
       }
 
       console.log("AI Response:", answer);
       setMessages(prev => [...prev, { type: 'ai', text: answer }]);
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       console.error('AI Error:', error);
-      setMessages(prev => [...prev, { type: 'ai', text: 'Error: ' + (error.message || error) }]);
+      setMessages(prev => [...prev, { type: 'ai', text: 'Error: ' + message }]);
     } finally {
       setLoading(false);
     }
@@ -619,7 +788,7 @@ export default function Home() {
 
       // Initialize Web Speech API (Chrome-style)
       if ('webkitSpeechRecognition' in window) {
-        const recognition: any = new window.webkitSpeechRecognition();
+        const recognition = new window.webkitSpeechRecognition() as unknown as SpeechRecognition;
         recognition.continuous = true;
         recognition.interimResults = true;
         recognition.lang = 'en-US';
@@ -657,7 +826,7 @@ export default function Home() {
           }
         };
 
-        recognition.onerror = (event: any) => {
+        recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
             console.error("Speech recognition error", event.error);
             if (event.error === 'not-allowed') {
                 setMessages(prev => [...prev, { type: 'ai', text: 'Error: Microphone access denied.' }]);
@@ -676,10 +845,9 @@ export default function Home() {
                     }]);
 
                     // Stop current recognition attempt
-                    try { recognition.stop(); } catch(e) {}
+                    try { recognition.stop(); } catch { void 0; }
                     setIsListening(false);
                     
-                    // Restart will be handled by the useEffect that watches useWhisperFallback
                     return; 
                 }
             } else if (event.error === 'no-speech') {
@@ -691,10 +859,10 @@ export default function Home() {
             setIsListening(false);
         };
 
-        recognition.onresult = (event: any) => {
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
           // Robust mapping as requested by user, while maintaining our logic
           const fullTranscript = Array.from(event.results)
-              .map((result: any) => result[0].transcript)
+              .map((result: SpeechRecognitionResult) => result[0].transcript)
               .join('');
           console.log('Full Transcript History:', fullTranscript);
 
@@ -757,13 +925,13 @@ export default function Home() {
       if (useWhisperFallback) {
         startWhisperRecording();
       } else {
-        try { recognitionRef.current?.start(); } catch(e) {}
+        try { recognitionRef.current?.start(); } catch { void 0; }
       }
     } else {
       if (useWhisperFallback) {
         stopWhisperRecording();
       } else {
-        try { recognitionRef.current?.stop(); } catch(e) {}
+        try { recognitionRef.current?.stop(); } catch { void 0; }
       }
     }
   }, [isRecording, useWhisperFallback]);
@@ -798,12 +966,6 @@ export default function Home() {
               style={{cursor: 'pointer', color: '#00f3ff'}} 
               onClick={handleNewSession}
               aria-label="New Session (Ctrl+K)"
-            />
-            <Camera
-              size={20}
-              style={{cursor: 'pointer', color: isCapturing ? '#ff5555' : '#00f3ff'}}
-              onClick={handleCaptureScreen}
-              aria-label="Capture Screen"
             />
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer'}} onClick={() => setSpeakerMode(speakerMode === 'interviewer' ? 'me' : 'interviewer')}>
@@ -851,8 +1013,13 @@ export default function Home() {
             <div key={idx} className={`chat-bubble ${msg.type === 'context' ? 'user context' : msg.type}`}>
                 <h4>
                     <span>
-                        {msg.type === 'user' ? 'Interviewer' : 
-                         msg.type === 'context' ? 'Me' : 'Suggestion'}
+                        {msg.type === 'ai'
+                          ? 'AI'
+                          : speakerMode === 'me'
+                            ? 'Me'
+                            : msg.type === 'user'
+                              ? 'Interviewer'
+                              : 'Me'}
                     </span>
                     <button 
                         onClick={() => handleCopy(msg.text, idx)}
@@ -862,7 +1029,9 @@ export default function Home() {
                         {copiedIndex === idx ? <Check size={14} /> : <Copy size={14} />}
                     </button>
                 </h4>
-                <div className={`chat-text ai-answer ${!showCodeBlocks ? 'hide-code' : ''}`}>{msg.text}</div>
+                <div className={`chat-text ai-answer ${!showCodeBlocks ? 'hide-code' : ''}`}>
+                  {renderMessageText(msg.text)}
+                </div>
             </div>
         ))}
         
@@ -928,7 +1097,7 @@ export default function Home() {
                     value={manualInput}
                     onChange={(e) => setManualInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                    placeholder={speakerMode === 'interviewer' ? "Type interviewer's question..." : "Type your answer..."}
+                    placeholder={speakerMode === 'interviewer' ? "Type interviewer's question..." : "Type your question for the AI..."}
                     style={{
                         flex: 1,
                         background: '#333',
@@ -939,6 +1108,24 @@ export default function Home() {
                         outline: 'none'
                     }}
                 />
+                <button 
+                    onClick={handleCaptureScreen}
+                    title="Read Screen / Solve Puzzle"
+                    style={{
+                        background: 'rgba(0, 243, 255, 0.1)',
+                        border: '1px solid #00f3ff',
+                        borderRadius: '4px',
+                        padding: '0 8px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: isCapturing ? '#ff5555' : '#00f3ff',
+                        transition: 'all 0.2s ease'
+                    }}
+                >
+                    <Camera size={20} className={isCapturing ? 'pulse' : ''} />
+                </button>
                 <button 
                     onClick={handleSend}
                     style={{

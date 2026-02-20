@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Trash2 } from 'lucide-react';
 import Header from '../components/Header';
@@ -10,19 +10,18 @@ interface HistoryItem {
 }
 
 export default function History() {
-  const [history, setHistory] = useState<HistoryItem[]>([]);
-  const navigate = useNavigate();
-
-  useEffect(() => {
+  const [history, setHistory] = useState<HistoryItem[]>(() => {
     const saved = localStorage.getItem('interview_history');
-    if (saved) {
-        try {
-            setHistory(JSON.parse(saved).reverse()); // Newest first
-        } catch (e) {
-            console.error('Failed to parse history', e);
-        }
+    if (!saved) return [];
+    try {
+      const parsed = JSON.parse(saved) as HistoryItem[];
+      return parsed.slice().reverse();
+    } catch (e) {
+      console.error('Failed to parse history', e);
+      return [];
     }
-  }, []);
+  });
+  const navigate = useNavigate();
 
   const clearHistory = () => {
     if (confirm('Are you sure you want to delete all history?')) {

@@ -30,18 +30,20 @@ function createWindow() {
     alwaysOnTop: true,
     frame: false,
     transparent: true,
-    resizable: true, // Explicitly allow resizing
+    resizable: true,
+    minWidth: 300,
+    minHeight: 400,
     hasShadow: false,
     autoHideMenuBar: true,
-    skipTaskbar: true, // Hide from taskbar
+    skipTaskbar: true,
     backgroundColor: '#00000000',
   });
 
-  // Remove the menu completely
-  win.setMenu(null);
-
   // Hides the window from screen capture
   win.setContentProtection(true);
+
+  // Set as Always on Top and ignore standard mouse events for the transparency to work correctly on some systems
+  win.setAlwaysOnTop(true, 'screen-saver');
 
   if (isDev) {
     win.loadURL('http://localhost:5173');
@@ -82,12 +84,15 @@ function createWindow() {
     }
   }, 2 * 60 * 60 * 1000);
 
-  // Global Shortcut to toggle visibility (Safety net since no taskbar icon)
+  // Global Shortcut to toggle visibility
   globalShortcut.register('CommandOrControl+Shift+H', () => {
     if (win.isVisible()) {
       win.hide();
+      win.setSkipTaskbar(true);
     } else {
       win.show();
+      win.setSkipTaskbar(false);
+      win.focus();
     }
   });
 
@@ -95,8 +100,20 @@ function createWindow() {
   ipcMain.on('toggle-window', () => {
     if (win.isVisible()) {
       win.hide();
+      win.setSkipTaskbar(true);
     } else {
       win.show();
+      win.setSkipTaskbar(false);
+      win.focus();
+    }
+  });
+
+  ipcMain.handle('check-for-updates', async () => {
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      return { success: true, result };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   });
 
@@ -335,7 +352,9 @@ function createWindow() {
 
   ipcMain.on('resize-window', (event, { width, height }) => {
     if (win) {
-      win.setSize(Math.round(width), Math.round(height));
+      const targetWidth = Math.max(300, Math.round(width));
+      const targetHeight = Math.max(400, Math.round(height));
+      win.setSize(targetWidth, targetHeight);
     }
   });
 
@@ -346,14 +365,31 @@ function createWindow() {
         // But usually setContentProtection is enough.
     }
   });
+
+  ipcMain.on('set-transparency', (event, { enabled, percent }) => {
+    if (!win) return;
+    const value = typeof percent === 'number' ? percent : 0;
+    const clampedPercent = Math.min(80, Math.max(0, value));
+    if (!enabled) {
+      win.setOpacity(1);
+      return;
+    }
+    const opacityFromPercent = 1 - clampedPercent / 100;
+    const targetOpacity = Math.max(0.2, Math.min(1, opacityFromPercent));
+    win.setOpacity(targetOpacity);
+  });
   
-  // Fix black screen on show
   win.on('show', () => {
       // Re-apply content protection and transparency settings
+      win.setSkipTaskbar(false);
       win.setContentProtection(false);
       setTimeout(() => {
           win.setContentProtection(true);
       }, 100);
+  });
+
+  win.on('hide', () => {
+      win.setSkipTaskbar(true);
   });
 
   // Handle Window Close

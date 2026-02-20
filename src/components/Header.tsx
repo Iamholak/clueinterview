@@ -7,25 +7,19 @@ interface HeaderProps {
 
 export default function Header({ title }: HeaderProps) {
   const handleMinimize = () => {
-    // @ts-ignore
     if (window.electron && window.electron.minimize) {
-      // @ts-ignore
       window.electron.minimize();
     }
   };
 
   const handleMaximize = () => {
-    // @ts-ignore
     if (window.electron && window.electron.maximize) {
-      // @ts-ignore
       window.electron.maximize();
     }
   };
 
   const handleClose = () => {
-    // @ts-ignore
     if (window.electron && window.electron.close) {
-      // @ts-ignore
       window.electron.close();
     }
   };

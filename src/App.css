@@ -15,12 +15,15 @@
 
 body {
   margin: 0;
+  padding: 0;
   font-family: 'Inter', sans-serif;
   -webkit-font-smoothing: antialiased;
   background-color: transparent;
   color: var(--text-main);
   overflow: hidden;
-  user-select: text; /* Changed from none to text to allow selection */
+  user-select: text;
+  width: 100vw;
+  height: 100vh;
 }
 
 #root {
@@ -33,7 +36,8 @@ body {
 .app-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: 100vh;
+  width: 100vw;
   background: var(--bg-dark);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -52,7 +56,8 @@ body {
   background: linear-gradient(90deg, rgba(0,240,255,0.05) 0%, rgba(112,0,255,0.05) 100%);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
-  user-select: none; /* Keep header non-selectable to prioritize dragging */
+  user-select: none;
+  cursor: move;
 }
 
 .header-title {

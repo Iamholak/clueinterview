@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Home, Settings, User, History } from 'lucide-react';
 import { useRef } from 'react';
+import type { CSSProperties } from 'react';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
@@ -9,21 +10,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const startSize = useRef({ width: 0, height: 0 });
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Capture the pointer and store the initial screen position and window size
     e.currentTarget.setPointerCapture(e.pointerId);
     startPos.current = { x: e.screenX, y: e.screenY };
-    startSize.current = { width: window.innerWidth, height: window.innerHeight };
+    startSize.current = { 
+      width: window.outerWidth, 
+      height: window.outerHeight 
+    };
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.buttons !== 1) return;
     if (window.electron) {
+      // Delta is the distance the mouse has moved from the start position
       const deltaX = e.screenX - startPos.current.x;
       const deltaY = e.screenY - startPos.current.y;
       
+      // New size = Initial Size + Delta
       const newWidth = Math.max(300, startSize.current.width + deltaX);
       const newHeight = Math.max(400, startSize.current.height + deltaY);
       
-      window.electron.resize(newWidth, newHeight);
+      window.electron.resize(Math.round(newWidth), Math.round(newHeight));
     }
   };
 
@@ -33,26 +40,29 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const isActive = (path: string) => location.pathname === path;
 
+  const resizeHandleStyle: CSSProperties & { WebkitAppRegion?: string } = {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: '20px',
+    height: '20px',
+    cursor: 'se-resize',
+    zIndex: 9999,
+    background: 'linear-gradient(135deg, transparent 50%, rgba(0, 243, 255, 0.4) 50%)',
+    borderBottomRightRadius: '4px',
+    WebkitAppRegion: 'no-drag',
+  };
+
   return (
     <div className="app-container">
       {children}
       
-      {/* Resize Handle */}
+      {/* Visual Resize Handle - Standard Way for Frameless Windows */}
       <div 
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          right: 0,
-          width: '20px',
-          height: '20px',
-          cursor: 'se-resize',
-          zIndex: 9999,
-          background: 'transparent' // Keep transparent but larger area
-        }}
-        title="Resize"
+        style={resizeHandleStyle}
       />
 
       <div className="bottom-nav">
