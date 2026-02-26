@@ -1,7 +1,7 @@
 {
   "name": "clueinterview",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "AI Interview Copilot with Stealth Mode",
   "author": "Trae AI",
   "type": "module",

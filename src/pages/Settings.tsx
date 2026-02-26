@@ -154,6 +154,10 @@ export default function Settings() {
   };
 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved'>('idle');
+  const [aiTestStatus, setAiTestStatus] = useState<{
+    state: 'idle' | 'testing' | 'success' | 'error';
+    message: string;
+  }>({ state: 'idle', message: '' });
 
   // Save changes manually
   const handleSave = () => {
@@ -626,6 +630,42 @@ export default function Settings() {
   const activeApi = apis.find(a => a.id === activeApiId) || apis[0];
 
   if (!activeApi) return null;
+
+  const handleTestAIConnection = async () => {
+    if (!window.electron || !window.electron.askAI) {
+      setAiTestStatus({ state: 'error', message: 'AI test is only available in the desktop app.' });
+      return;
+    }
+
+    const apiKey = (activeApi.apiKey || '').trim();
+    const baseUrl = (activeApi.baseUrl || '').trim();
+    const model = (activeApi.model || '').trim();
+
+    if (!apiKey || !baseUrl || !model) {
+      setAiTestStatus({ state: 'error', message: 'Please fill API key, base URL, and model first.' });
+      return;
+    }
+
+    setAiTestStatus({ state: 'testing', message: 'Testing AI connection...' });
+    try {
+      const answer = await window.electron.askAI({
+        apiKey,
+        baseUrl,
+        model,
+        messages: [{ role: 'user', content: 'Reply with OK only.' }],
+        systemPrompt: 'You are a connection test endpoint. Reply with OK only.'
+      });
+
+      const clean = (answer || '').trim();
+      setAiTestStatus({
+        state: 'success',
+        message: clean ? `Connected: ${clean}` : 'Connected successfully.'
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAiTestStatus({ state: 'error', message: `Connection failed: ${message}` });
+    }
+  };
 
   return (
     <>
@@ -1250,6 +1290,37 @@ export default function Settings() {
               value={activeApi.model} 
               onChange={(e) => updateApi(activeApi.id, 'model', e.target.value)}
             />
+          </div>
+
+          <div className="form-group">
+            <label>AI Connection Test</label>
+            <button
+              onClick={handleTestAIConnection}
+              disabled={aiTestStatus.state === 'testing'}
+              style={{
+                width: '100%',
+                padding: '10px',
+                background: aiTestStatus.state === 'testing' ? '#555' : 'rgba(255, 255, 255, 0.1)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                color: '#fff',
+                borderRadius: '8px',
+                cursor: aiTestStatus.state === 'testing' ? 'default' : 'pointer',
+                fontSize: '0.85rem'
+              }}
+            >
+              {aiTestStatus.state === 'testing' ? 'Testing...' : 'Test AI Connection'}
+            </button>
+            {aiTestStatus.message && (
+              <div
+                style={{
+                  marginTop: '8px',
+                  fontSize: '0.8rem',
+                  color: aiTestStatus.state === 'error' ? '#ff5555' : '#00ff9d'
+                }}
+              >
+                {aiTestStatus.message}
+              </div>
+            )}
           </div>
 
           <div className="form-group" style={{marginTop: '20px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '10px'}}>

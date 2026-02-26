@@ -28,8 +28,8 @@ function createWindow() {
       enableBlinkFeatures: 'MediaDevices' // Enable media devices for microphone access
     },
     alwaysOnTop: true,
-    frame: false,
-    transparent: true,
+    frame: true,
+    transparent: false,
     resizable: true,
     minWidth: 300,
     minHeight: 400,

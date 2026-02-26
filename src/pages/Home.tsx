@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Monitor, User, Send, PlusCircle, Copy, Check, Camera } from 'lucide-react';
+import { Mic, MicOff, Monitor, User, Send, PlusCircle, Copy, Check, Camera, Video } from 'lucide-react';
 import Header from '../components/Header';
 // ... (Keep existing Type definitions for Web Speech API from App.tsx)
 interface SpeechRecognition extends EventTarget {
@@ -179,6 +179,7 @@ export default function Home() {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [showCodeBlocks, setShowCodeBlocks] = useState(true);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [isAnalyzingVideo, setIsAnalyzingVideo] = useState(false);
 
   // Keyboard Shortcuts
   useEffect(() => {
@@ -222,6 +223,80 @@ export default function Home() {
       } finally {
         setIsCapturing(false);
       }
+    }
+  };
+
+  const handleAnalyzeVideoScreen = async () => {
+    const hasPermission = localStorage.getItem('screen_capture_permission') === 'true';
+    if (!hasPermission) {
+      setMessages(prev => [...prev, { type: 'ai', text: 'Screen capture permission is not granted. Please enable it in Settings.' }]);
+      return;
+    }
+
+    const apiKey = (localStorage.getItem('openai_api_key') || '').trim();
+    const rawBaseUrl = localStorage.getItem('openai_base_url') || 'https://api.openai.com/v1';
+    const baseUrl = rawBaseUrl.trim();
+    const model = (localStorage.getItem('openai_model') || 'gpt-4o').trim();
+
+    if (!apiKey) {
+      setMessages(prev => [...prev, { type: 'ai', text: 'Please configure your API Key in Settings.' }]);
+      return;
+    }
+
+    if (!window.electron || !window.electron.captureScreen || !window.electron.askAI) {
+      setMessages(prev => [...prev, { type: 'ai', text: 'Video analysis is only available in the desktop app.' }]);
+      return;
+    }
+
+    setIsAnalyzingVideo(true);
+    setLoading(true);
+    setMessages(prev => [...prev, { type: 'context', text: '[Video Analysis: Capturing screen frames...]' }]);
+
+    try {
+      const frames: string[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        const frame = await window.electron.captureScreen();
+        if (frame) {
+          frames.push(frame);
+        }
+        if (i < 3) {
+          await new Promise(resolve => setTimeout(resolve, 900));
+        }
+      }
+
+      if (frames.length === 0) {
+        setMessages(prev => [...prev, { type: 'ai', text: 'Could not capture frames for video analysis.' }]);
+        return;
+      }
+
+      const imageParts = frames.flatMap((frame, idx) => ([
+        { type: 'text', text: `Frame ${idx + 1}:` },
+        { type: 'image_url', image_url: { url: frame } }
+      ]));
+
+      const answer = await window.electron.askAI({
+        apiKey,
+        baseUrl,
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Analyze these sequential frames from my screen as a short video. Explain what is happening over time and give concise interview help based on the visible content.' },
+              ...imageParts
+            ]
+          }
+        ],
+        systemPrompt: 'You are a fast visual reasoning assistant for live interviews. Extract key text, detect timeline/context across frames, and provide concise actionable guidance.'
+      });
+
+      setMessages(prev => [...prev, { type: 'ai', text: answer }]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setMessages(prev => [...prev, { type: 'ai', text: 'Error analyzing video: ' + message }]);
+    } finally {
+      setLoading(false);
+      setIsAnalyzingVideo(false);
     }
   };
 
@@ -1126,6 +1201,24 @@ export default function Home() {
                 >
                     <Camera size={20} className={isCapturing ? 'pulse' : ''} />
                 </button>
+                <button
+                    onClick={handleAnalyzeVideoScreen}
+                    title="Analyze Video on Screen"
+                    style={{
+                        background: 'rgba(255, 200, 0, 0.1)',
+                        border: '1px solid #ffb300',
+                        borderRadius: '4px',
+                        padding: '0 8px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: isAnalyzingVideo ? '#ff5555' : '#ffb300',
+                        transition: 'all 0.2s ease'
+                    }}
+                >
+                    <Video size={20} className={isAnalyzingVideo ? 'pulse' : ''} />
+                </button>
                 <button 
                     onClick={handleSend}
                     style={{
@@ -1158,21 +1251,6 @@ export default function Home() {
                     }}
                 >
                     <PlusCircle size={16} />
-                </button>
-                <button 
-                    onClick={() => getAIResponse("Test connection")} 
-                    disabled={loading}
-                    style={{
-                        background: 'rgba(255, 255, 255, 0.1)',
-                        border: '1px solid rgba(255, 255, 255, 0.2)',
-                        color: '#fff',
-                        padding: '0 10px',
-                        borderRadius: '4px',
-                        fontSize: '0.8rem',
-                        cursor: loading ? 'wait' : 'pointer'
-                    }}
-                >
-                    Test AI
                 </button>
             </div>
         </div>
