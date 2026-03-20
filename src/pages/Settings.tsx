@@ -792,10 +792,11 @@ export default function Settings() {
                                 onChange={(e) => setTranscriptionProvider(e.target.value)}
                             >
                                 <option value="openai">OpenAI Whisper</option>
-                            <option value="gemini">Google Gemini</option>
-                            <option value="custom">Custom (OpenAI Compatible)</option>
-                        </select>
-                    </div>
+                                <option value="openrouter">OpenRouter</option>
+                                <option value="gemini">Google Gemini</option>
+                                <option value="custom">Custom (OpenAI Compatible)</option>
+                            </select>
+                        </div>
 
                     <div className="form-group">
                         <label>API Key (Optional if same as Chat)</label>
@@ -804,22 +805,26 @@ export default function Settings() {
                             className="form-control" 
                             value={whisperApiKey}
                             onChange={(e) => setWhisperApiKey(e.target.value)}
-                            placeholder={transcriptionProvider === 'gemini' ? "Gemini API Key" : "sk-..."}
+                            placeholder={transcriptionProvider === 'gemini' ? "Gemini API Key" : transcriptionProvider === 'openrouter' ? "OpenRouter API Key" : "sk-..."}
                         />
                         <div style={{fontSize: '0.75rem', color: '#888', marginTop: '4px'}}>
-                            {transcriptionProvider === 'gemini' ? "Required for Gemini." : "Required if Chat Provider doesn't support Whisper."}
+                            {transcriptionProvider === 'gemini'
+                              ? "Optional if your active chat profile already uses Gemini."
+                              : transcriptionProvider === 'openrouter'
+                                ? "Optional if your active chat profile already uses OpenRouter."
+                                : "Optional if your active chat profile already supports transcription."}
                         </div>
                     </div>
                     
-                    {(transcriptionProvider === 'openai' || transcriptionProvider === 'custom') && (
+                    {(transcriptionProvider === 'openai' || transcriptionProvider === 'custom' || transcriptionProvider === 'openrouter') && (
                         <div className="form-group">
-                            <label>Base URL {transcriptionProvider === 'openai' ? '(Optional)' : '(Required)'}</label>
+                            <label>Base URL {transcriptionProvider === 'custom' ? '(Required)' : '(Optional)'}</label>
                             <input 
                                 type="text" 
                                 className="form-control" 
                                 value={whisperBaseUrl}
                                 onChange={(e) => setWhisperBaseUrl(e.target.value)}
-                                placeholder="https://api.openai.com/v1"
+                                placeholder={transcriptionProvider === 'openrouter' ? "https://openrouter.ai/api/v1" : "https://api.openai.com/v1"}
                             />
                         </div>
                     )}
@@ -1408,7 +1413,7 @@ export default function Settings() {
                 {saveStatus === 'saved' ? 'Settings Saved!' : 'Save Settings'}
              </button>
              <p style={{fontSize: '0.8rem', color: '#666', textAlign: 'center'}}>
-                ClueInterview v1.2.0 - Multi-API Support & Vision
+                ClueInterview v1.2.2 - Multi-API Support & Vision
              </p>
           </div>
         </div>

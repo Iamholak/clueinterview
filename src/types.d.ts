@@ -34,6 +34,7 @@ interface TranscribeAudioParams {
   baseUrl: string;
   audioBuffer: ArrayBuffer;
   provider: string;
+  model?: string;
 }
 
 declare global {

@@ -1,9 +1,9 @@
 {
-  "name": "clueinterview",
+  "name": "clue-interview",
   "private": true,
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "AI Interview Copilot with Stealth Mode",
-  "author": "Trae AI",
+  "author": "Holak Inc",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -14,11 +14,11 @@
     "preview": "vite preview",
     "electron:dev": "concurrently -k \"cross-env NODE_ENV=development vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "electron:build": "npm run build && electron-builder",
-    "electron:pack": "npm run build && electron-packager . ClueInterview --platform=win32 --arch=x64 --out=release-packager --icon=src/assets/icon.ico --overwrite"
+    "electron:pack": "npm run build && electron-packager . \"Clue Interview\" --platform=win32 --arch=x64 --out=release-packager --icon=src/assets/icon.ico --overwrite"
   },
   "build": {
     "appId": "com.clueinterview.app",
-    "productName": "ClueInterview",
+    "productName": "Clue Interview",
     "directories": {
       "output": "build_release"
     },
@@ -39,7 +39,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "ClueInterview"
+      "shortcutName": "Clue Interview"
     },
     "win": {
       "icon": "src/assets/icon.ico",

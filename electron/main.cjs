@@ -208,7 +208,7 @@ function createWindow() {
           'Authorization': `Bearer ${apiKey}`,
           // Add referer for OpenRouter or others if needed
           'HTTP-Referer': 'https://clueinterview.com',
-          'X-Title': 'ClueInterview'
+          'X-Title': 'Clue Interview'
         },
         body: JSON.stringify({
           model: model,
@@ -229,7 +229,7 @@ function createWindow() {
     }
   });
 
-  ipcMain.handle('transcribe-audio', async (event, { apiKey, baseUrl, audioBuffer, provider }) => {
+  ipcMain.handle('transcribe-audio', async (event, { apiKey, baseUrl, audioBuffer, provider, model }) => {
     try {
       // audioBuffer comes as an ArrayBuffer/Uint8Array from renderer
 
@@ -277,6 +277,62 @@ function createWindow() {
 
           const data = await response.json();
           return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      }
+
+      if (provider === 'openrouter') {
+        const cleanBaseUrl = (baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+        const url = `${cleanBaseUrl}/chat/completions`;
+        const base64Audio = Buffer.from(audioBuffer).toString('base64');
+        const targetModel = model || 'openai/gpt-4o-mini-transcribe';
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': 'https://clueinterview.com',
+            'X-Title': 'Clue Interview'
+          },
+          body: JSON.stringify({
+            model: targetModel,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Transcribe this audio exactly. Return only the transcription text.'
+                  },
+                  {
+                    type: 'input_audio',
+                    input_audio: {
+                      data: base64Audio,
+                      format: 'webm'
+                    }
+                  }
+                ]
+              }
+            ]
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error?.message || `OpenRouter STT Error: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (typeof content === 'string') {
+          return content.trim();
+        }
+        if (Array.isArray(content)) {
+          return content
+            .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+            .join(' ')
+            .trim();
+        }
+        return '';
       }
 
       // Default: OpenAI Whisper
@@ -433,7 +489,7 @@ function createTray() {
         app.quit();
     }}
   ]);
-  tray.setToolTip('ClueInterview (Stealth Mode)');
+  tray.setToolTip('Clue Interview (Stealth Mode)');
   tray.setContextMenu(contextMenu);
   
   tray.on('click', () => {

@@ -375,10 +375,67 @@ export default function Home() {
         return stored === 'true'; 
     });
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const whisperIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveTranscriptBufferRef = useRef('');
+  const transcriptPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTranscribingChunkRef = useRef(false);
   
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const resolveTranscriptionConfig = () => {
+    const chatApiKey = (localStorage.getItem('openai_api_key') || '').trim();
+    const chatBaseUrl = (localStorage.getItem('openai_base_url') || 'https://api.openai.com/v1').trim();
+    const chatModel = (localStorage.getItem('openai_model') || 'gpt-4o').trim();
+    const whisperApiKey = (localStorage.getItem('whisper_api_key') || '').trim();
+    const whisperBaseUrl = (localStorage.getItem('whisper_base_url') || '').trim();
+    const transcriptionProvider = localStorage.getItem('transcription_provider') || 'openai';
+
+    const apiKey = whisperApiKey || chatApiKey;
+    let baseUrl = whisperBaseUrl;
+    const model = chatModel;
+
+    if (!baseUrl) {
+      if (transcriptionProvider === 'openrouter') {
+        baseUrl = chatBaseUrl || 'https://openrouter.ai/api/v1';
+      } else if (transcriptionProvider === 'openai') {
+        baseUrl = chatBaseUrl || 'https://api.openai.com/v1';
+      } else if (transcriptionProvider === 'gemini') {
+        baseUrl = chatBaseUrl || 'https://generativelanguage.googleapis.com/v1beta';
+      } else {
+        baseUrl = chatBaseUrl || 'https://api.openai.com/v1';
+      }
+    }
+
+    return { apiKey, baseUrl, model, transcriptionProvider };
+  };
+
+  const finalizeTranscriptChunk = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const currentMode = speakerModeRef.current;
+    if (currentMode === 'interviewer') {
+      setMessages(prev => [...prev, { type: 'user', text: trimmed }]);
+    } else {
+      setMessages(prev => [...prev, { type: 'context', text: trimmed }]);
+    }
+    getAIResponse(trimmed);
+  };
+
+  const queueTranscriptFinalize = () => {
+    if (transcriptPauseTimerRef.current) {
+      clearTimeout(transcriptPauseTimerRef.current);
+    }
+
+    transcriptPauseTimerRef.current = setTimeout(() => {
+      const buffered = liveTranscriptBufferRef.current.trim();
+      if (!buffered) return;
+
+      liveTranscriptBufferRef.current = '';
+      setCurrentTranscript('');
+      finalizeTranscriptChunk(buffered);
+    }, 1500);
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -454,20 +511,15 @@ export default function Home() {
   };
 
   const startWhisperRecording = async () => {
-      // Check for API Keys first
-      const chatApiKey = (localStorage.getItem('openai_api_key') || '').trim();
-      const whisperApiKey = (localStorage.getItem('whisper_api_key') || '').trim();
+      const { apiKey } = resolveTranscriptionConfig();
       
-      // If no keys at all, we can't do anything
-      if (!chatApiKey && !whisperApiKey) {
+      if (!apiKey) {
           const msg = 'Error: No API Key found. For reliable speech recognition in the desktop app, please configure an OpenAI API Key in Settings.';
           console.error(msg);
           setMessages(prev => [...prev, { type: 'ai', text: msg }]);
           setIsRecording(false);
           return;
       }
-      
-      console.log(`[Whisper Init] Keys detected - Chat: ${chatApiKey ? 'Yes' : 'No'}, Whisper: ${whisperApiKey ? 'Yes' : 'No'}`);
 
       try {
           const selectedMicId = localStorage.getItem('selected_mic_id');
@@ -500,16 +552,8 @@ export default function Home() {
               requestAnimationFrame(updateVisualizer);
           };
           updateVisualizer();
-
-          // Process data every 4 seconds
-          // We can't just use timeslice because we need to send complete blobs.
-          // Strategy: Start, wait 4s, stop, send, start again.
-          
-          const processAudio = () => {
-              if (mediaRecorder.state === 'recording') {
-                  mediaRecorder.stop();
-              }
-          };
+          liveTranscriptBufferRef.current = '';
+          setCurrentTranscript('');
 
           mediaRecorder.ondataavailable = async (e) => {
               if (e.data.size > 0) {
@@ -518,97 +562,49 @@ export default function Home() {
                   console.warn("[Audio Debug] Received empty audio chunk.");
               }
 
-              if (e.data.size > 0 && isRecordingRef.current) {
-                  // Send to Electron IPC for Whisper
-                  const arrayBuffer = await e.data.arrayBuffer();
-                  
-                  // Get config
-                  const chatApiKey = (localStorage.getItem('openai_api_key') || '').trim();
-                  const chatBaseUrl = localStorage.getItem('openai_base_url') || 'https://api.openai.com/v1';
-                  
-                  // Whisper specific config
-                  const whisperApiKey = (localStorage.getItem('whisper_api_key') || '').trim();
-                  const whisperBaseUrl = (localStorage.getItem('whisper_base_url') || '').trim();
-                  const transcriptionProvider = localStorage.getItem('transcription_provider') || 'openai';
-                  
-                  // Determine credentials to use for Transcription
-                  let apiKey = whisperApiKey;
-                  let baseUrl = whisperBaseUrl || 'https://api.openai.com/v1';
-
-                  // Fallback to chat credentials if whisper specific ones are missing
-                  if (!apiKey) {
-                      apiKey = chatApiKey;
-                  }
-                  
-                  // If user didn't set a specific Whisper URL, but set a Chat URL...
-                  // For OpenAI provider, we can infer from Chat URL if it's compatible.
-                  if (transcriptionProvider === 'openai' && !whisperBaseUrl && chatBaseUrl) {
-                       // If Chat URL is OpenRouter, we CANNOT use it for Whisper.
-                       // So we default to OpenAI (assuming they have an OpenAI key or similar).
-                       if (chatBaseUrl.includes('openrouter.ai')) {
-                           baseUrl = 'https://api.openai.com/v1';
-                       } else {
-                           baseUrl = chatBaseUrl;
-                       }
-                  }
-                  
-                  if (!apiKey) {
-                      console.warn("No API Key available for Transcription.");
+              if (e.data.size > 0 && isRecordingRef.current && window.electron && window.electron.transcribeAudio) {
+                  if (isTranscribingChunkRef.current) {
                       return;
                   }
 
-                  if (window.electron && window.electron.transcribeAudio) {
-                      try {
-                          console.log(`Sending audio chunk to Transcription (${transcriptionProvider})...`, { baseUrl });
-                          const text = await window.electron.transcribeAudio({
-                              apiKey,
-                              baseUrl,
-                              audioBuffer: arrayBuffer,
-                              provider: transcriptionProvider
-                          });
-                          
-                          console.log("Whisper Transcript Result:", text ? `"${text}"` : "(empty)");
+                  isTranscribingChunkRef.current = true;
+                  try {
+                      const arrayBuffer = await e.data.arrayBuffer();
+                      const { apiKey, baseUrl, model, transcriptionProvider } = resolveTranscriptionConfig();
 
-                          if (text && text.trim().length > 0) {
-                              setCurrentTranscript(text);
-                              
-                              // Determine speaker (simple logic or alternate)
-                              // For now, assume current mode
-                              if (speakerModeRef.current === 'interviewer') {
-                                  // Wait for silence or just append?
-                                  // Whisper gives full phrases.
-                                  // Let's treat it as a message.
-                                  setMessages(prev => [...prev, { type: 'user', text: text }]);
-                                  getAIResponse(text);
-                              } else {
-                                  // Me mode
-                                  setMessages(prev => [...prev, { type: 'context', text: text }]);
-                                  getAIResponse(text);
-                              }
-                          } else {
-                              console.log("Ignored empty transcript");
-                          }
-                      } catch (err) {
-                          console.error("Whisper Error:", err);
+                      if (!apiKey) {
+                          console.warn("No API Key available for Transcription.");
+                          return;
                       }
+
+                      const text = await window.electron.transcribeAudio({
+                          apiKey,
+                          baseUrl,
+                          audioBuffer: arrayBuffer,
+                          provider: transcriptionProvider,
+                          model
+                      });
+
+                      const trimmed = (text || '').trim();
+                      if (!trimmed) {
+                          return;
+                      }
+
+                      const previous = liveTranscriptBufferRef.current.trim();
+                      const next = previous ? `${previous} ${trimmed}` : trimmed;
+                      liveTranscriptBufferRef.current = next;
+                      setCurrentTranscript(next);
+                      queueTranscriptFinalize();
+                  } catch (err) {
+                      console.error("Whisper Error:", err);
+                  } finally {
+                      isTranscribingChunkRef.current = false;
                   }
-              }
-              
-              // Restart if still recording
-              if (isRecordingRef.current && mediaRecorder.state === 'inactive') {
-                  mediaRecorder.start();
               }
           };
 
-          mediaRecorder.start();
+          mediaRecorder.start(1200);
           setIsListening(true);
-          
-          // Loop every 4 seconds
-          whisperIntervalRef.current = setInterval(() => {
-              if (isRecordingRef.current) {
-                  processAudio();
-              }
-          }, 4000);
 
       } catch (err) {
           console.error("Failed to start Whisper recording:", err);
@@ -617,9 +613,15 @@ export default function Home() {
   };
 
   const stopWhisperRecording = () => {
-      if (whisperIntervalRef.current) {
-          clearInterval(whisperIntervalRef.current);
-          whisperIntervalRef.current = null;
+      if (transcriptPauseTimerRef.current) {
+          clearTimeout(transcriptPauseTimerRef.current);
+          transcriptPauseTimerRef.current = null;
+      }
+      const buffered = liveTranscriptBufferRef.current.trim();
+      if (buffered) {
+          liveTranscriptBufferRef.current = '';
+          setCurrentTranscript('');
+          finalizeTranscriptChunk(buffered);
       }
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
           mediaRecorderRef.current.stop(); // This triggers final dataavailable
