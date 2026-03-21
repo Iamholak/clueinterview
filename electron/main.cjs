@@ -308,7 +308,7 @@ function createWindow() {
       // Bug1 Fix: Validate minimum audio size/duration (approx 0.5s of audio)
       // Standard webm/opus headers + small chunk of audio usually > 1000 bytes
       const MIN_AUDIO_SIZE = 1000; 
-      const actualSize = finalBuffer.byteLength ?? finalBuffer.length ?? 0;
+      const actualSize = Buffer.isBuffer(finalBuffer) ? finalBuffer.length : (finalBuffer.byteLength ?? 0);
       if (actualSize < MIN_AUDIO_SIZE) {
         console.warn(`[Main] Skipping transcription: Audio chunk too small (${actualSize} bytes)`);
         return ''; // Return empty string instead of erroring to avoid UI noise

@@ -34,9 +34,9 @@ type TranscribeAudioParams = {
   baseUrl: string;
   provider: string;
   model?: string;
-  audioBuffer?: ArrayBuffer;
+  audioBuffer?: ArrayBuffer | Uint8Array;
   audioData?: string;
-} & ({ audioBuffer: ArrayBuffer } | { audioData: string });
+} & ({ audioBuffer: ArrayBuffer | Uint8Array } | { audioData: string });
 
 declare global {
   interface Window {
