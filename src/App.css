@@ -163,6 +163,9 @@ body {
   font-size: 0.95rem;
   line-height: 1.5;
   white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-word;
   transition: opacity 0.3s ease;
 }
 

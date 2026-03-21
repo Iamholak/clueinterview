@@ -1,5 +1,6 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, Tray, Menu, nativeImage, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
 
 // Configure auto-updater
@@ -9,16 +10,44 @@ autoUpdater.allowPrerelease = false;
 let tray = null;
 let win = null;
 
+// Window state management
+const stateFilePath = path.join(app.getPath('userData'), 'window-state.json');
+
+function saveWindowState() {
+  if (!win) return;
+  const bounds = win.getBounds();
+  try {
+    fs.writeFileSync(stateFilePath, JSON.stringify(bounds));
+  } catch (e) {
+    console.error('Failed to save window state:', e);
+  }
+}
+
+function loadWindowState() {
+  try {
+    if (fs.existsSync(stateFilePath)) {
+      const data = fs.readFileSync(stateFilePath, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (e) {
+    console.error('Failed to load window state:', e);
+  }
+  return null;
+}
+
 function createWindow() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
   const isDev = process.env.NODE_ENV === 'development';
   const iconPath = path.join(__dirname, isDev ? '../public/icon.png' : '../dist/icon.png');
 
+  const savedState = loadWindowState();
+
   win = new BrowserWindow({
-    width: 400,
-    height: 600,
-    x: width - 420,
-    y: 50,
+    title: "Clue Interview",
+    width: savedState?.width || 400,
+    height: savedState?.height || 600,
+    x: savedState?.x ?? (screenWidth - 420),
+    y: savedState?.y ?? 50,
     icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -50,21 +79,53 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, '../dist/index.html'));
     
-    // Check for updates in production
+    // Check for updates in production immediately
     autoUpdater.checkForUpdatesAndNotify();
+    
+    // Check for updates every 4 hours
+    setInterval(() => {
+      autoUpdater.checkForUpdatesAndNotify();
+    }, 4 * 60 * 60 * 1000);
   }
 
-  // Auto-updater events
-  autoUpdater.on('update-available', () => {
-    console.log('Update available');
+  // Auto-updater events to communicate with Renderer
+  autoUpdater.on('checking-for-update', () => {
+    win?.webContents.send('update-status', { status: 'checking', message: 'Checking for updates...' });
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    win?.webContents.send('update-status', { 
+      status: 'available', 
+      message: `Update v${info.version} available!`,
+      version: info.version
+    });
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    win?.webContents.send('update-status', { status: 'latest', message: 'App is up to date.' });
+  });
+
+  autoUpdater.on('download-progress', (progressObj) => {
+    win?.webContents.send('update-progress', {
+      percent: Math.round(progressObj.percent),
+      bytesPerSecond: progressObj.bytesPerSecond,
+      transferred: progressObj.transferred,
+      total: progressObj.total
+    });
   });
 
   autoUpdater.on('update-downloaded', (info) => {
+    win?.webContents.send('update-status', { 
+      status: 'downloaded', 
+      message: 'Update downloaded. Restart to apply.',
+      version: info.version
+    });
+    
     dialog.showMessageBox({
       type: 'info',
       title: 'Update Ready',
-      message: 'A new version has been downloaded. Restart the app to apply the update.',
-      buttons: ['Restart', 'Later']
+      message: `A new version (v${info.version}) has been downloaded. Restart the app to apply the update.`,
+      buttons: ['Restart Now', 'Later']
     }).then((result) => {
       if (result.response === 0) {
         autoUpdater.quitAndInstall();
@@ -74,15 +135,11 @@ function createWindow() {
 
   autoUpdater.on('error', (err) => {
     console.error('Auto-updater error:', err);
-    // Don't show error dialog to users, just log it
+    win?.webContents.send('update-status', { 
+      status: 'error', 
+      message: `Update Error: ${err.message}` 
+    });
   });
-
-  // Check for updates every 2 hours
-  setInterval(() => {
-    if (!isDev) {
-      autoUpdater.checkForUpdates();
-    }
-  }, 2 * 60 * 60 * 1000);
 
   // Global Shortcut to toggle visibility
   globalShortcut.register('CommandOrControl+Shift+H', () => {
@@ -133,9 +190,13 @@ function createWindow() {
       const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'));
 
       // Check for Google Gemini
-      if (baseUrl.includes('generativelanguage.googleapis.com') || model.includes('gemini')) {
+      if (baseUrl.includes('generativelanguage.googleapis.com') || model.toLowerCase().includes('gemini')) {
           const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
-          const url = `${cleanBaseUrl}/models/${model}:generateContent?key=${apiKey}`;
+          // Gemini 3.1 models might need the models/ prefix if not already present, but the URL must be clean
+          const modelName = model.replace(/^models\//, '');
+          const url = `${cleanBaseUrl}/models/${modelName}:generateContent?key=${apiKey}`;
+          
+          console.log('[Main] Calling Gemini at:', url); // Debug log
           
           const contents = messages.map(msg => {
               const role = msg.role === 'assistant' ? 'model' : 'user';
@@ -229,26 +290,33 @@ function createWindow() {
     }
   });
 
-  ipcMain.handle('transcribe-audio', async (event, { apiKey, baseUrl, audioBuffer, provider, model }) => {
+  ipcMain.handle('transcribe-audio', async (event, params) => {
     try {
-      // audioBuffer comes as an ArrayBuffer/Uint8Array from renderer
+      if (!params) throw new Error('No parameters provided to transcribe-audio');
+      
+      const { apiKey, baseUrl, audioBuffer, audioData, provider, model } = params;
+      
+      let finalBuffer = audioBuffer;
+      if (audioData && !finalBuffer) {
+        finalBuffer = Buffer.from(audioData, 'base64');
+      }
+      
+      if (!finalBuffer || (finalBuffer.byteLength === 0 && finalBuffer.length === 0)) {
+        throw new Error('No audio data provided (buffer is empty)');
+      }
 
       // Handle Gemini Provider
       if (provider === 'gemini') {
-          // Use specific version to avoid 'not found' errors
-          const model = 'gemini-2.5-flash'; 
-          
-          // Use default Gemini base URL if generic one provided, or use custom if it looks like Google's
+          const modelName = (model || 'gemini-2.5-flash').replace(/^models\//, ''); 
           let apiBase = 'https://generativelanguage.googleapis.com/v1beta';
           if (baseUrl && baseUrl.includes('googleapis.com')) {
               apiBase = baseUrl.replace(/\/+$/, '');
           }
           
-          const url = `${apiBase}/models/${model}:generateContent?key=${apiKey}`;
-          console.log('[Main] Transcribing with Gemini at:', url); // Debug log
+          const url = `${apiBase}/models/${modelName}:generateContent?key=${apiKey}`;
+          console.log('[Main] Transcribing with Gemini at:', url);
           
-          // Convert buffer to base64
-          const base64Audio = Buffer.from(audioBuffer).toString('base64');
+          const base64Audio = Buffer.from(finalBuffer).toString('base64');
           
           const body = {
               contents: [{
@@ -282,7 +350,7 @@ function createWindow() {
       if (provider === 'openrouter') {
         const cleanBaseUrl = (baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
         const url = `${cleanBaseUrl}/chat/completions`;
-        const base64Audio = Buffer.from(audioBuffer).toString('base64');
+        const base64Audio = Buffer.from(finalBuffer).toString('base64');
         const targetModel = model || 'openai/gpt-4o-mini-transcribe';
 
         const response = await fetch(url, {
@@ -323,54 +391,23 @@ function createWindow() {
 
         const data = await response.json();
         const content = data.choices?.[0]?.message?.content;
-        if (typeof content === 'string') {
-          return content.trim();
-        }
-        if (Array.isArray(content)) {
-          return content
-            .map((part) => (typeof part?.text === 'string' ? part.text : ''))
-            .join(' ')
-            .trim();
-        }
-        return '';
+        return typeof content === 'string' ? content.trim() : '';
       }
 
       // Default: OpenAI Whisper
-      // Convert to Blob for fetch
-      const blob = new Blob([audioBuffer], { type: 'audio/webm' });
+      const url = `${baseUrl.replace(/\/chat\/completions$/, '').replace(/\/+$/, '')}/audio/transcriptions`;
+      const blob = new Blob([finalBuffer], { type: 'audio/webm' });
       
       const formData = new FormData();
       formData.append('file', blob, 'recording.webm');
-      formData.append('model', 'whisper-1');
-      // Optional: prompt to guide context
-      // formData.append('prompt', 'Interview conversation');
+      formData.append('model', model || 'whisper-1');
 
-      // Adjust URL for audio endpoint
-      // baseUrl usually is .../v1. We need .../v1/audio/transcriptions
-      // If baseUrl ends with /chat/completions, strip it.
-      // A safe bet is using the base origin if possible, but let's assume baseUrl is like https://api.openai.com/v1
-      let cleanBaseUrl = baseUrl.replace(/\/chat\/completions$/, '').replace(/\/+$/, '');
-      
-      // HACK: OpenRouter does not support audio transcriptions yet.
-      // If the user points to OpenRouter, we should try to fallback to OpenAI's endpoint if possible,
-      // or just fail if they don't have a key. But if they provided a key that works for OpenAI...
-      // Actually, if the user explicitly set a Whisper Base URL in settings, it comes here as `baseUrl`.
-      // If they didn't, it might be the Chat URL.
-      // We should detect if it's openrouter and force OpenAI endpoint if so?
-      // No, that assumes their key is an OpenAI key. 
-      // Better strategy: The frontend should send the correct URL.
-      // But as a failsafe, if we see openrouter.ai in the URL, we know it will fail.
-      // For now, let's just log it clearly.
-      
-      const url = `${cleanBaseUrl}/audio/transcriptions`;
-
-      console.log('Transcribing audio to:', url); // Debug log
+      console.log('[Main] Transcribing with Whisper at:', url);
 
       const response = await fetch(url, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          // Content-Type is set automatically by fetch with FormData boundary
+          'Authorization': `Bearer ${apiKey}`
         },
         body: formData
       });
@@ -383,8 +420,8 @@ function createWindow() {
       const data = await response.json();
       return data.text;
     } catch (error) {
-      console.error('Whisper API Error in Main Process:', error);
-      throw error.message;
+      console.error('Transcription API Error:', error);
+      throw error.message || String(error);
     }
   });
 
@@ -417,8 +454,15 @@ function createWindow() {
   ipcMain.on('set-content-protection', (event, enable) => {
     if (win) {
         win.setContentProtection(enable);
-        // Sometimes transparency needs a nudge if toggling protection affects DWM
-        // But usually setContentProtection is enough.
+    }
+  });
+
+  ipcMain.on('set-ghost-mode', (event, enabled) => {
+    if (win) {
+        // Ghost mode means the window is non-focusable.
+        // This prevents interview platforms from detecting focus loss when interacting with the app.
+        win.setFocusable(!enabled);
+        console.log(`[Main] Ghost Mode set to: ${enabled}`);
     }
   });
 
@@ -448,12 +492,18 @@ function createWindow() {
       win.setSkipTaskbar(true);
   });
 
+  // Remember window state
+  win.on('resize', saveWindowState);
+  win.on('move', saveWindowState);
+
   // Handle Window Close
   win.on('close', (event) => {
     if (!app.isQuitting) {
       event.preventDefault();
       win.hide();
+      win.setSkipTaskbar(true);
     }
+    saveWindowState();
     return false;
   });
   

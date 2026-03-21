@@ -90,13 +90,15 @@ export default function Settings() {
     }
     return '1';
   });
-  const [updateStatus, setUpdateStatus] = useState<{status: 'idle' | 'checking' | 'available' | 'latest' | 'error', message?: string}>({status: 'idle'});
+  const [updateStatus, setUpdateStatus] = useState<{status: 'idle' | 'checking' | 'available' | 'latest' | 'downloaded' | 'error', message?: string, version?: string}>({status: 'idle'});
+  const [updateProgress, setUpdateProgress] = useState<{percent: number, transferred: number, total: number} | null>(null);
   
   // Lazy init to prevent overwriting saved settings with defaults on first render
   const [useWhisper, setUseWhisper] = useState(() => localStorage.getItem('use_whisper_stt') === 'true');
   const [transcriptionProvider, setTranscriptionProvider] = useState(() => localStorage.getItem('transcription_provider') || 'openai');
   const [whisperApiKey, setWhisperApiKey] = useState(() => localStorage.getItem('whisper_api_key') || '');
   const [whisperBaseUrl, setWhisperBaseUrl] = useState(() => localStorage.getItem('whisper_base_url') || 'https://api.openai.com/v1');
+  const [whisperModel, setWhisperModel] = useState(() => localStorage.getItem('whisper_model') || 'gemini-2.5-flash');
   const [screenCapturePermission, setScreenCapturePermission] = useState(() => localStorage.getItem('screen_capture_permission') === 'true');
   const [isInvisible, setIsInvisible] = useState(() => {
     const savedInvisibility = localStorage.getItem('app_invisibility');
@@ -105,6 +107,7 @@ export default function Settings() {
     }
     return savedInvisibility === 'true';
   }); // Default true (Stealth)
+  const [ghostMode, setGhostMode] = useState(() => localStorage.getItem('ghost_mode') === 'true');
 
   // Keyboard shortcut
   useEffect(() => {
@@ -122,6 +125,13 @@ export default function Settings() {
       window.electron.setContentProtection(isInvisible);
     }
   }, [isInvisible]);
+
+  useEffect(() => {
+    if (window.electron && window.electron.setGhostMode) {
+      window.electron.setGhostMode(ghostMode);
+    }
+    localStorage.setItem('ghost_mode', String(ghostMode));
+  }, [ghostMode]);
 
   const [transparencyEnabled, setTransparencyEnabled] = useState(() => localStorage.getItem('transparency_enabled') === 'true');
   const [transparencyLevel, setTransparencyLevel] = useState(() => {
@@ -153,8 +163,30 @@ export default function Settings() {
       localStorage.setItem('use_whisper_stt', String(newState));
   };
 
+  const handleTranscriptionProviderChange = (provider: string) => {
+    setTranscriptionProvider(provider);
+    
+    // Don't clear the key anymore, let the user decide if they want to change it
+    // setWhisperApiKey('');
+    
+    if (provider === 'openai') {
+      setWhisperBaseUrl('https://api.openai.com/v1');
+      setWhisperModel('whisper-1');
+    } else if (provider === 'openrouter') {
+      setWhisperBaseUrl('https://openrouter.ai/api/v1');
+      setWhisperModel('openai/whisper-1');
+    } else if (provider === 'gemini') {
+      setWhisperBaseUrl('https://generativelanguage.googleapis.com/v1beta');
+      setWhisperModel('gemini-2.5-flash');
+    }
+  };
+
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved'>('idle');
   const [aiTestStatus, setAiTestStatus] = useState<{
+    state: 'idle' | 'testing' | 'success' | 'error';
+    message: string;
+  }>({ state: 'idle', message: '' });
+  const [transcriptionTestStatus, setTranscriptionTestStatus] = useState<{
     state: 'idle' | 'testing' | 'success' | 'error';
     message: string;
   }>({ state: 'idle', message: '' });
@@ -181,6 +213,7 @@ export default function Settings() {
     localStorage.setItem('transcription_provider', transcriptionProvider);
     localStorage.setItem('whisper_api_key', whisperApiKey);
     localStorage.setItem('whisper_base_url', whisperBaseUrl);
+    localStorage.setItem('whisper_model', whisperModel);
     localStorage.setItem('screen_capture_permission', String(screenCapturePermission));
 
     setSaveStatus('saved');
@@ -212,9 +245,10 @@ export default function Settings() {
     localStorage.setItem('transcription_provider', transcriptionProvider);
     localStorage.setItem('whisper_api_key', whisperApiKey);
     localStorage.setItem('whisper_base_url', whisperBaseUrl);
+    localStorage.setItem('whisper_model', whisperModel);
     localStorage.setItem('screen_capture_permission', String(screenCapturePermission));
 
-  }, [apis, activeApiId, transcriptionProvider, whisperApiKey, whisperBaseUrl, screenCapturePermission]);
+  }, [apis, activeApiId, transcriptionProvider, whisperApiKey, whisperBaseUrl, whisperModel, screenCapturePermission]);
 
   const addApi = () => {
     const newApi: ApiConfig = {
@@ -232,6 +266,7 @@ export default function Settings() {
   const [testTranscript, setTestTranscript] = useState('');
   const [isTestingMic, setIsTestingMic] = useState(false);
   const [mediaRecorderTestResult, setMediaRecorderTestResult] = useState('');
+  const [testAudioUrl, setTestAudioUrl] = useState<string | null>(null);
   
   const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
@@ -287,6 +322,7 @@ export default function Settings() {
         content:
           'You are an expert interview coach.\n\n' +
           'Your role is to listen to the live interview and help the candidate.\n' +
+          'Look at both the interview transcript and any captured code or puzzles in the chat history.\n' +
           'When you receive messages tagged as Interviewer, respond with a direct, polished answer the candidate can say.\n' +
           'When you receive messages tagged as Me, briefly critique the answer and suggest improvements.\n' +
           'Be concise and prioritize information from the candidate resume below.\n' +
@@ -299,6 +335,7 @@ export default function Settings() {
         content:
           'You are a helpful AI assistant for the user.\n' +
           'Answer the user questions directly and clearly.\n' +
+          'You have access to the full chat history, including interview transcripts and captured code/screenshots.\n' +
           'When relevant, provide code examples and short explanations.\n' +
           'Assume the user is preparing for technical interviews.\n' +
           'Candidate Resume:\n{{RESUME}}',
@@ -309,7 +346,9 @@ export default function Settings() {
         category: 'Code',
         content:
           'You analyze code for correctness, style, and performance.\n' +
-          'Explain errors, suggest fixes, and propose improved implementations.\n' +
+          'You are part of a technical interview context.\n' +
+          'Look at the chat history to see the current conversation with the interviewer.\n' +
+          'Explain errors, suggest fixes, and propose improved implementations based on the context.\n' +
           'When showing code, use Markdown code fences with language identifiers.\n' +
           'Candidate Resume:\n{{RESUME}}',
       },
@@ -513,6 +552,7 @@ export default function Settings() {
   const testWhisperCapture = async () => {
     try {
         setMediaRecorderTestResult("Initializing MediaRecorder...");
+        setTestAudioUrl(null); // Clear previous recording
         const stream = await navigator.mediaDevices.getUserMedia({ 
             audio: { 
                 deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined 
@@ -527,6 +567,8 @@ export default function Settings() {
 
         mediaRecorder.onstop = () => {
             const blob = new Blob(chunks, { type: 'audio/webm' });
+            const url = URL.createObjectURL(blob);
+            setTestAudioUrl(url);
             setMediaRecorderTestResult(`Success! Recorded ${blob.size} bytes. (Type: ${blob.type})`);
             stream.getTracks().forEach(track => track.stop());
         };
@@ -560,15 +602,30 @@ export default function Settings() {
         };
     }, []);
 
+  useEffect(() => {
+    if (window.electron && window.electron.onUpdateStatus) {
+      window.electron.onUpdateStatus((data) => {
+        setUpdateStatus(data as any);
+        if (data.status === 'downloaded' || data.status === 'latest' || data.status === 'error') {
+          setUpdateProgress(null);
+        }
+      });
+    }
+    if (window.electron && window.electron.onUpdateProgress) {
+      window.electron.onUpdateProgress((data) => {
+        setUpdateProgress(data);
+      });
+    }
+  }, []);
+
   const handleCheckUpdates = async () => {
     if (!window.electron || !window.electron.checkForUpdates) return;
     
     setUpdateStatus({status: 'checking', message: 'Checking for updates...'});
+    setUpdateProgress(null);
     try {
       const result = await window.electron.checkForUpdates();
-      if (result.success) {
-        setUpdateStatus({status: 'available', message: 'Update check complete. If a new version is available, it will download automatically.'});
-      } else {
+      if (!result.success) {
         setUpdateStatus({status: 'error', message: result.error || 'Failed to check for updates.'});
       }
     } catch {
@@ -615,7 +672,7 @@ export default function Settings() {
                 updated.model = 'openai/gpt-3.5-turbo';
             } else if (value === 'gemini') {
                 updated.baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
-                updated.model = 'gemini-1.5-flash';
+                updated.model = 'gemini-2.5-flash';
             } else {
                 updated.baseUrl = 'https://api.openai.com/v1';
                 updated.model = 'gpt-4o';
@@ -667,6 +724,88 @@ export default function Settings() {
     }
   };
 
+  const handleTestTranscriptionConnection = async () => {
+    if (!window.electron || !window.electron.transcribeAudio) {
+      setTranscriptionTestStatus({ state: 'error', message: 'Transcription test is only available in the desktop app.' });
+      return;
+    }
+
+    const apiKey = (whisperApiKey || activeApi.apiKey || '').trim();
+    let baseUrl = (whisperBaseUrl || '').trim();
+    if (!baseUrl) {
+      if (transcriptionProvider === 'gemini') {
+        baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
+      } else if (transcriptionProvider === 'openrouter') {
+        baseUrl = 'https://openrouter.ai/api/v1';
+      } else {
+        baseUrl = 'https://api.openai.com/v1';
+      }
+    }
+    const model = (whisperModel || 'whisper-1').trim();
+
+    if (!apiKey) {
+      setTranscriptionTestStatus({ state: 'error', message: 'API Key is required for transcription test.' });
+      return;
+    }
+
+    setTranscriptionTestStatus({ state: 'testing', message: 'Initializing microphone for test...' });
+    
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : true 
+        });
+        
+        const mediaRecorder = new MediaRecorder(stream);
+        const chunks: Blob[] = [];
+        
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+        };
+        
+        mediaRecorder.onstop = async () => {
+            setTranscriptionTestStatus({ state: 'testing', message: 'Sending audio to API...' });
+            try {
+                const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+                
+                try {
+                    const text = await window.electron.transcribeAudio({
+                        apiKey,
+                        baseUrl,
+                        model,
+                        audioBuffer: uint8Array,
+                        provider: transcriptionProvider
+                    });
+                    
+                    setTranscriptionTestStatus({ 
+                        state: 'success', 
+                        message: text ? `Transcribed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"` : 'Transcribed empty text.' 
+                    });
+                } catch (err: any) {
+                    setTranscriptionTestStatus({ state: 'error', message: `API Error: ${err.message || err}` });
+                }
+            } catch (err: any) {
+                setTranscriptionTestStatus({ state: 'error', message: `Test failed: ${err.message || err}` });
+            } finally {
+                stream.getTracks().forEach(track => track.stop());
+            }
+        };
+        
+        mediaRecorder.start();
+        setTranscriptionTestStatus({ state: 'testing', message: 'Recording 2 seconds of audio...' });
+        
+        setTimeout(() => {
+            if (mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+            }
+        }, 2000);
+        
+    } catch (err: any) {
+        setTranscriptionTestStatus({ state: 'error', message: `Microphone error: ${err.message || err}` });
+    }
+  };
+
   return (
     <>
       <Header title="Settings" />
@@ -700,6 +839,37 @@ export default function Settings() {
                         }}
                     >
                         {isInvisible ? "Make Visible" : "Make Invisible"}
+                    </button>
+                </div>
+            </div>
+
+            <div className="section-title">Ghost Mode (Focus-less)</div>
+            <div style={{marginBottom: '20px', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px'}}>
+                <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
+                    <div style={{flex: 1, marginRight: '10px'}}>
+                        <div style={{fontWeight: 'bold', marginBottom: '4px'}}>
+                            {ghostMode ? "Ghost Mode Active" : "Ghost Mode Disabled"}
+                        </div>
+                        <div style={{fontSize: '0.8rem', color: '#aaa'}}>
+                            {ghostMode 
+                                ? "The app will NOT take focus when clicked. This prevents interview platforms from knowing you switched tabs. (Typing disabled)" 
+                                : "The app behaves like a normal window. Clicking it may notify interview platforms that you left the tab."}
+                        </div>
+                    </div>
+                    <button 
+                        onClick={() => setGhostMode(!ghostMode)}
+                        style={{
+                            padding: '8px 16px',
+                            background: ghostMode ? '#ff00ff' : '#444',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: '4px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            minWidth: '100px'
+                        }}
+                    >
+                        {ghostMode ? "Deactivate" : "Activate Ghost"}
                     </button>
                 </div>
             </div>
@@ -789,7 +959,7 @@ export default function Settings() {
                             <select 
                                 className="form-control"
                                 value={transcriptionProvider}
-                                onChange={(e) => setTranscriptionProvider(e.target.value)}
+                                onChange={(e) => handleTranscriptionProviderChange(e.target.value)}
                             >
                                 <option value="openai">OpenAI Whisper</option>
                                 <option value="openrouter">OpenRouter</option>
@@ -816,18 +986,68 @@ export default function Settings() {
                         </div>
                     </div>
                     
-                    {(transcriptionProvider === 'openai' || transcriptionProvider === 'custom' || transcriptionProvider === 'openrouter') && (
-                        <div className="form-group">
-                            <label>Base URL {transcriptionProvider === 'custom' ? '(Required)' : '(Optional)'}</label>
-                            <input 
-                                type="text" 
-                                className="form-control" 
-                                value={whisperBaseUrl}
-                                onChange={(e) => setWhisperBaseUrl(e.target.value)}
-                                placeholder={transcriptionProvider === 'openrouter' ? "https://openrouter.ai/api/v1" : "https://api.openai.com/v1"}
-                            />
+                    <div className="form-group">
+                        <label>Base URL {transcriptionProvider === 'custom' ? '(Required)' : '(Optional)'}</label>
+                        <input 
+                            type="text" 
+                            className="form-control" 
+                            value={whisperBaseUrl}
+                            onChange={(e) => setWhisperBaseUrl(e.target.value)}
+                            placeholder={
+                                transcriptionProvider === 'openrouter' ? "https://openrouter.ai/api/v1" : 
+                                transcriptionProvider === 'gemini' ? "https://generativelanguage.googleapis.com/v1beta" :
+                                "https://api.openai.com/v1"
+                            }
+                        />
+                    </div>
+
+                    <div className="form-group">
+                        <label>Model Name (e.g., whisper-1)</label>
+                        <input 
+                            type="text" 
+                            className="form-control" 
+                            value={whisperModel}
+                            onChange={(e) => setWhisperModel(e.target.value)}
+                            placeholder={transcriptionProvider === 'gemini' ? "gemini-2.5-flash" : "whisper-1"}
+                        />
+                    </div>
+
+                    <div className="form-group">
+                        <label>Transcription Test</label>
+                        <button
+                          onClick={handleTestTranscriptionConnection}
+                          disabled={transcriptionTestStatus.state === 'testing'}
+                          style={{
+                            width: '100%',
+                            padding: '10px',
+                            background: transcriptionTestStatus.state === 'testing' ? '#555' : 'rgba(255, 0, 255, 0.1)',
+                            border: '1px solid rgba(255, 0, 255, 0.3)',
+                            color: '#fff',
+                            borderRadius: '8px',
+                            cursor: transcriptionTestStatus.state === 'testing' ? 'default' : 'pointer',
+                            fontSize: '0.85rem'
+                          }}
+                        >
+                          {transcriptionTestStatus.state === 'testing' ? 'Testing...' : 'Test Transcription Connection'}
+                        </button>
+                        {transcriptionTestStatus.message && (
+                          <div
+                            style={{
+                              marginTop: '8px',
+                              fontSize: '0.8rem',
+                              color: transcriptionTestStatus.state === 'error' ? '#ff5555' : '#00ff9d',
+                              wordBreak: 'break-word',
+                              overflowWrap: 'break-word',
+                              whiteSpace: 'pre-wrap'
+                            }}
+                          >
+                            {transcriptionTestStatus.message}
+                          </div>
+                        )}
+                        <div style={{fontSize: '0.75rem', color: '#888', marginTop: '4px'}}>
+                            * Recording 2 seconds of audio and transcribing via the selected provider.
                         </div>
-                    )}
+                    </div>
                     
                     <div style={{display: 'flex', justifyContent: 'flex-end', marginTop: '10px'}}>
                         <button 
@@ -982,9 +1202,20 @@ export default function Settings() {
                             borderRadius: '4px',
                             fontSize: '0.9rem',
                             color: mediaRecorderTestResult.includes('Success') ? '#00ff9d' : '#ccc',
-                            fontStyle: mediaRecorderTestResult ? 'normal' : 'italic'
+                            fontStyle: mediaRecorderTestResult ? 'normal' : 'italic',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '8px'
                         }}>
-                            {mediaRecorderTestResult || "Click to test raw audio capture (for Whisper)..."}
+                            <div>{mediaRecorderTestResult || "Click to test raw audio capture (for Whisper)..."}</div>
+                            {testAudioUrl && (
+                                <div style={{marginTop: '4px'}}>
+                                    <audio controls src={testAudioUrl} style={{height: '30px', width: '100%'}} />
+                                    <div style={{fontSize: '0.7rem', color: '#888', marginTop: '4px'}}>
+                                        * Review your recording above. This audio is not stored and will be cleared when you re-test or leave settings.
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1320,7 +1551,10 @@ export default function Settings() {
                 style={{
                   marginTop: '8px',
                   fontSize: '0.8rem',
-                  color: aiTestStatus.state === 'error' ? '#ff5555' : '#00ff9d'
+                  color: aiTestStatus.state === 'error' ? '#ff5555' : '#00ff9d',
+                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word',
+                  whiteSpace: 'pre-wrap'
                 }}
               >
                 {aiTestStatus.message}
@@ -1356,7 +1590,10 @@ export default function Settings() {
                     background: 'rgba(0,0,0,0.3)',
                     borderRadius: '4px',
                     fontSize: '0.9rem',
-                    color: testTranscript.includes('Error') || testTranscript.includes('denied') ? '#ff5555' : '#00ff9d'
+                    color: testTranscript.includes('Error') || testTranscript.includes('denied') ? '#ff5555' : '#00ff9d',
+                    wordBreak: 'break-word',
+                    overflowWrap: 'break-word',
+                    whiteSpace: 'pre-wrap'
                 }}>
                     {testTranscript}
                 </div>
@@ -1369,26 +1606,44 @@ export default function Settings() {
           <div className="form-group" style={{marginTop: '10px'}}>
             <button 
                 onClick={handleCheckUpdates}
-                disabled={updateStatus.status === 'checking'}
+                disabled={updateStatus.status === 'checking' || updateStatus.status === 'available'}
                 style={{
                     width: '100%',
                     padding: '10px',
-                    background: updateStatus.status === 'checking' ? '#555' : 'rgba(0, 243, 255, 0.1)',
+                    background: (updateStatus.status === 'checking' || updateStatus.status === 'available') ? '#555' : 'rgba(0, 243, 255, 0.1)',
                     border: '1px solid #00f3ff',
                     color: '#00f3ff',
                     borderRadius: '8px',
-                    cursor: updateStatus.status === 'checking' ? 'default' : 'pointer',
+                    cursor: (updateStatus.status === 'checking' || updateStatus.status === 'available') ? 'default' : 'pointer',
                     fontSize: '0.85rem'
                 }}
             >
-                {updateStatus.status === 'checking' ? 'Checking...' : 'Check for Updates'}
+                {updateStatus.status === 'checking' ? 'Checking...' : 
+                 updateStatus.status === 'available' ? 'Downloading Update...' :
+                 updateStatus.status === 'downloaded' ? 'Update Ready' : 'Check for Updates'}
             </button>
+            
+            {updateProgress && (
+                <div style={{marginTop: '12px'}}>
+                    <div style={{display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#00f3ff', marginBottom: '4px'}}>
+                        <span>Downloading...</span>
+                        <span>{updateProgress.percent}%</span>
+                    </div>
+                    <div style={{width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden'}}>
+                        <div style={{width: `${updateProgress.percent}%`, height: '100%', background: '#00f3ff', transition: 'width 0.2s ease'}}></div>
+                    </div>
+                </div>
+            )}
+
             {updateStatus.message && (
                 <div style={{
                     marginTop: '8px',
                     fontSize: '0.75rem',
                     color: updateStatus.status === 'error' ? '#ff5555' : '#00f3ff',
-                    textAlign: 'center'
+                    textAlign: 'center',
+                    wordBreak: 'break-word',
+                    overflowWrap: 'break-word',
+                    whiteSpace: 'pre-wrap'
                 }}>
                     {updateStatus.message}
                 </div>
@@ -1396,6 +1651,9 @@ export default function Settings() {
           </div>
 
           <div className="section" style={{marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '10px'}}>
+             <div style={{fontSize: '0.75rem', color: '#888', textAlign: 'center', marginBottom: '5px'}}>
+                Your data is stored locally in your app profile.
+             </div>
              <button 
                 onClick={handleSave}
                 style={{
@@ -1413,7 +1671,7 @@ export default function Settings() {
                 {saveStatus === 'saved' ? 'Settings Saved!' : 'Save Settings'}
              </button>
              <p style={{fontSize: '0.8rem', color: '#666', textAlign: 'center'}}>
-                ClueInterview v1.2.2 - Multi-API Support & Vision
+                Clue Interview v1.2.3 - Multi-API Support & Vision
              </p>
           </div>
         </div>

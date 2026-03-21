@@ -32,7 +32,8 @@ interface AskAIParams {
 interface TranscribeAudioParams {
   apiKey: string;
   baseUrl: string;
-  audioBuffer: ArrayBuffer;
+  audioBuffer?: ArrayBuffer;
+  audioData?: string;
   provider: string;
   model?: string;
 }
@@ -53,7 +54,10 @@ declare global {
       resize: (width: number, height: number) => void;
       setContentProtection?: (enable: boolean) => void;
       setTransparency?: (enabled: boolean, percent: number) => void;
+      setGhostMode?: (enabled: boolean) => void;
       checkForUpdates: () => Promise<{ success: boolean; result?: unknown; error?: string }>;
+      onUpdateStatus: (callback: (data: { status: string; message: string; version?: string }) => void) => void;
+      onUpdateProgress: (callback: (data: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => void;
     };
   }
 }

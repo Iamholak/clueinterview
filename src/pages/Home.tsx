@@ -302,10 +302,13 @@ export default function Home() {
 
   const analyzeImage = async (base64Image: string) => {
     setLoading(true);
+    
+    // Get config from localStorage - use the same logic as getAIResponse
     const apiKey = (localStorage.getItem('openai_api_key') || '').trim();
     const rawBaseUrl = localStorage.getItem('openai_base_url') || 'https://api.openai.com/v1';
     const baseUrl = rawBaseUrl.trim();
     const model = (localStorage.getItem('openai_model') || 'gpt-4o').trim();
+    const resume = localStorage.getItem('user_resume') || '';
 
     if (!apiKey) {
       setMessages(prev => [...prev, { type: 'ai', text: 'Please configure your API Key in Settings.' }]);
@@ -314,21 +317,48 @@ export default function Home() {
     }
 
     try {
-      const systemPrompt = `You are an expert technical interviewer. I will provide you with a screenshot of a puzzle, code task, or question. Please extract the text and solve it concisely.`;
+      // Get Code Analysis prompt from settings if available
+      const promptConfigRaw = localStorage.getItem('prompt_templates');
+      let systemPrompt = 'You are an expert technical interviewer. I will provide you with a screenshot of a puzzle, code task, or question. Please extract the text and solve it concisely.';
+      
+      if (promptConfigRaw) {
+        try {
+          const parsed = JSON.parse(promptConfigRaw) as { prompts?: PromptTemplate[] };
+          const list = parsed.prompts || [];
+          // Look for a prompt with "Analysis" in the name
+          const analysisPrompt = list.find(p => p.name.toLowerCase().includes('analysis') || p.category.toLowerCase().includes('analysis'));
+          if (analysisPrompt && analysisPrompt.content) {
+            systemPrompt = analysisPrompt.content;
+          }
+        } catch (e) {
+          console.error("Error loading analysis prompt:", e);
+        }
+      }
+
+      if (resume) {
+        systemPrompt = systemPrompt.replace('{{RESUME}}', resume);
+      } else {
+        systemPrompt = systemPrompt.replace('{{RESUME}}', '(no resume provided)');
+      }
+
+      // Include chat history for context
+      const history = messages.map(m => {
+        const role: 'user' | 'assistant' = m.type === 'ai' ? 'assistant' : 'user';
+        return { role, content: m.text };
+      });
       
       // Check if Electron askAI is available
       if (window.electron && window.electron.askAI) {
-        // We need to modify askAI to handle images or send as a special message
-        // For now, let's just send the intent
         const answer = await window.electron.askAI({
           apiKey,
           baseUrl,
           model,
           messages: [
+            ...history,
             { 
               role: 'user', 
               content: [
-                { type: 'text', text: 'What is shown in this image? If it is a coding task or puzzle, please solve it.' },
+                { type: 'text', text: 'Analyze this screenshot in the context of our interview. If it is a coding task or question, please solve it.' },
                 { type: 'image_url', image_url: { url: base64Image } }
               ] 
             }
@@ -388,11 +418,12 @@ export default function Home() {
     const chatModel = (localStorage.getItem('openai_model') || 'gpt-4o').trim();
     const whisperApiKey = (localStorage.getItem('whisper_api_key') || '').trim();
     const whisperBaseUrl = (localStorage.getItem('whisper_base_url') || '').trim();
+    const whisperModel = (localStorage.getItem('whisper_model') || 'whisper-1').trim();
     const transcriptionProvider = localStorage.getItem('transcription_provider') || 'openai';
 
     const apiKey = whisperApiKey || chatApiKey;
     let baseUrl = whisperBaseUrl;
-    const model = chatModel;
+    const model = whisperModel || chatModel;
 
     if (!baseUrl) {
       if (transcriptionProvider === 'openrouter') {
@@ -570,6 +601,7 @@ export default function Home() {
                   isTranscribingChunkRef.current = true;
                   try {
                       const arrayBuffer = await e.data.arrayBuffer();
+                      const uint8Array = new Uint8Array(arrayBuffer);
                       const { apiKey, baseUrl, model, transcriptionProvider } = resolveTranscriptionConfig();
 
                       if (!apiKey) {
@@ -580,7 +612,7 @@ export default function Home() {
                       const text = await window.electron.transcribeAudio({
                           apiKey,
                           baseUrl,
-                          audioBuffer: arrayBuffer,
+                          audioBuffer: uint8Array,
                           provider: transcriptionProvider,
                           model
                       });
@@ -711,6 +743,7 @@ export default function Home() {
           systemPrompt = 
             'You are an expert interview coach.\n\n' +
             'Your role is to listen to the live interview and help the candidate.\n' +
+            'Look at both the interview transcript and any captured code or puzzles in the chat history.\n' +
             'When you receive messages tagged as Interviewer, respond with a direct, polished answer the candidate can say.\n' +
             'When you receive messages tagged as Me, briefly critique the answer and suggest improvements.\n' +
             'Be concise and prioritize information from the candidate resume below.\n' +
@@ -719,6 +752,7 @@ export default function Home() {
           systemPrompt =
             'You are an AI assistant helping the user ask questions and solve interview and coding tasks.\n' +
             'Respond directly to the user with clear, concise answers.\n' +
+            'You have access to the full chat history, including interview transcripts and captured code/screenshots.\n' +
             'When relevant, provide code examples and short explanations.\n' +
             'Assume the user is preparing for technical interviews.\n' +
             'Candidate Resume:\n{{RESUME}}';
