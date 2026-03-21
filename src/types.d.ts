@@ -29,14 +29,14 @@ interface AskAIParams {
   systemPrompt?: string;
 }
 
-interface TranscribeAudioParams {
+type TranscribeAudioParams = {
   apiKey: string;
   baseUrl: string;
-  audioBuffer?: ArrayBuffer;
-  audioData?: string;
   provider: string;
   model?: string;
-}
+  audioBuffer?: ArrayBuffer;
+  audioData?: string;
+} & ({ audioBuffer: ArrayBuffer } | { audioData: string });
 
 declare global {
   interface Window {
