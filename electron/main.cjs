@@ -1,6 +1,7 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, Tray, Menu, nativeImage, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const WebSocket = require('ws');
 const { autoUpdater } = require('electron-updater');
 
 // Configure auto-updater
@@ -290,11 +291,237 @@ function createWindow() {
     }
   });
 
+let activeSTTConnections = new Map();
+
+async function getSpeechmaticsTranscript(params) {
+  const { apiKey, finalBuffer, model, sampleRate } = params;
+  const sessionId = 'speechmatics-global';
+  
+  try {
+    const { createSpeechmaticsJWT } = await import('@speechmatics/auth');
+    const { RealtimeClient } = await import('@speechmatics/real-time-client');
+
+    let session = activeSTTConnections.get(sessionId);
+    
+    // Check if session exists, has the same key, and the internal websocket is likely active
+    if (!session || session.apiKey !== apiKey) {
+      if (session && session.client) {
+        try { await session.client.stopRecognition(); } catch (e) {}
+      }
+      
+      const client = new RealtimeClient();
+      
+      const newSession = { 
+        client, 
+        ws: null,
+        transcript: '', 
+        apiKey, 
+        lastUsed: Date.now(),
+        isReady: false,
+        handshakeError: null
+      };
+
+      client.addEventListener("receiveMessage", ({ data }) => {
+        if (data.message === "AddTranscript") {
+          for (const result of data.results) {
+            newSession.transcript += result.alternatives?.[0].content + ' ';
+          }
+        } else if (data.message === "RecognitionStarted") {
+          newSession.isReady = true;
+        } else if (data.message === "Error") {
+          console.error('[Main] Speechmatics Error:', data.reason);
+          newSession.handshakeError = data.reason || 'Speechmatics websocket error';
+        }
+      });
+
+      const jwt = await createSpeechmaticsJWT({
+        type: "rt",
+        apiKey,
+        ttl: 3600,
+      });
+
+      await client.start(jwt, {
+        transcription_config: {
+          language: model || "en",
+          operating_point: "enhanced",
+          max_delay: 1.0,
+          enable_partials: true,
+          transcript_filtering_config: {
+            remove_disfluencies: true,
+          },
+        },
+        audio_format: {
+          type: "raw",
+          encoding: "pcm_s16le",
+          sample_rate: sampleRate || 16000,
+        },
+      });
+
+      // Wait for RecognitionStarted
+      await new Promise((resolve, reject) => {
+        let checkReady = setInterval(() => {
+          if (newSession.isReady) {
+            clearInterval(checkReady);
+            clearTimeout(timeoutId);
+            resolve();
+          }
+          if (newSession.handshakeError) {
+            clearInterval(checkReady);
+            clearTimeout(timeoutId);
+            reject(new Error(`Speechmatics: ${newSession.handshakeError}`));
+          }
+        }, 100);
+
+        const timeoutId = setTimeout(() => {
+          clearInterval(checkReady);
+          if (!newSession.isReady) reject(new Error('Speechmatics RecognitionStarted Timeout'));
+        }, 5000);
+      });
+
+      activeSTTConnections.set(sessionId, newSession);
+      session = newSession;
+    }
+
+    session.transcript = ''; 
+    session.lastUsed = Date.now();
+    
+    await session.client.sendAudio(Buffer.from(finalBuffer));
+    
+    // Wait for transcript
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    return session.transcript.trim();
+  } catch (err) {
+    console.error('Speechmatics Error:', err);
+    activeSTTConnections.delete(sessionId);
+    throw err;
+  }
+}
+
+async function getAssemblyAITranscript(params) {
+  const { apiKey, finalBuffer, model, baseUrl, sampleRate } = params;
+  const sessionId = 'assemblyai-global';
+  
+  try {
+    let session = activeSTTConnections.get(sessionId);
+    
+    if (!session || session.apiKey !== apiKey || !session.ws || session.ws.readyState !== 1) {
+      if (session && session.ws) session.ws.close();
+      
+      // Guard against accidental API-key-as-URL misconfiguration.
+      const providedBaseUrl = typeof baseUrl === 'string' ? baseUrl.trim() : '';
+      const normalizedBaseUrl = providedBaseUrl.startsWith('ws://') || providedBaseUrl.startsWith('wss://')
+        ? providedBaseUrl
+        : 'wss://streaming.assemblyai.com/v3/ws';
+      const baseUrlClean = normalizedBaseUrl.replace(/\/+$/, '');
+      const url = `${baseUrlClean}?sample_rate=${sampleRate || 16000}&encoding=pcm_s16le&speech_model=${encodeURIComponent(model || 'u3-rt-pro')}`;
+      
+      console.log(`[Main] Connecting to AssemblyAI: ${baseUrlClean}`);
+      
+      const ws = new WebSocket(url, {
+        headers: { Authorization: apiKey }
+      });
+      
+      const newSession = { 
+        ws, 
+        client: null,
+        transcript: '', 
+        apiKey, 
+        lastUsed: Date.now(),
+        isReady: false,
+        handshakeError: null
+      };
+      
+      ws.on('message', (data) => {
+        try {
+          const rawMessage = data.toString();
+          const msg = JSON.parse(rawMessage);
+          console.log(`[Main] AssemblyAI Msg:`, JSON.stringify(msg));
+          
+          if (msg.type === 'Begin') {
+            newSession.isReady = true;
+          } else if (msg.type === 'Turn') {
+            if (msg.transcript) {
+              newSession.transcript = msg.transcript;
+            }
+          } else if (msg.type === 'Error' || msg.error) {
+            const errText = msg.error || msg.message || JSON.stringify(msg);
+            console.error(`[Main] AssemblyAI Error: ${errText}`);
+            newSession.handshakeError = errText;
+          }
+        } catch (e) {
+          console.error('[Main] AssemblyAI Message Error:', e.message, 'Raw:', data.toString());
+        }
+      });
+
+      await new Promise((resolve, reject) => {
+        const checkReady = setInterval(() => {
+          if (newSession.isReady) {
+            clearInterval(checkReady);
+            clearTimeout(timeoutId);
+            resolve();
+          }
+          if (newSession.handshakeError) {
+            clearInterval(checkReady);
+            clearTimeout(timeoutId);
+            reject(new Error(`AssemblyAI: ${newSession.handshakeError}`));
+          }
+        }, 100);
+
+        const timeoutId = setTimeout(() => {
+          clearInterval(checkReady);
+          if (!newSession.isReady) {
+            reject(new Error('AssemblyAI Handshake Timeout - No Begin event received. Check API key, model name, and audio format.'));
+          }
+        }, 12000);
+
+        ws.on('error', (err) => {
+          clearInterval(checkReady);
+          clearTimeout(timeoutId);
+          console.error('[Main] AssemblyAI WS Socket Error:', err.message);
+          reject(new Error(`AssemblyAI Socket Error: ${err.message}`));
+        });
+      });
+
+      activeSTTConnections.set(sessionId, newSession);
+      session = newSession;
+    }
+
+    session.transcript = ''; // Reset for this chunk
+    session.lastUsed = Date.now();
+    
+    const buffer = Buffer.from(finalBuffer);
+    session.ws.send(buffer, { binary: true });
+    
+    // Wait for response (AssemblyAI real-time is very fast, but we need to give it a moment)
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    return session.transcript.trim();
+  } catch (err) {
+    console.error('AssemblyAI Error:', err);
+    activeSTTConnections.delete(sessionId);
+    throw err;
+  }
+}
+
+// Cleanup idle STT connections every 1 minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of activeSTTConnections.entries()) {
+    if (now - session.lastUsed > 5 * 60 * 1000) { // 5 minutes idle
+      console.log(`[Main] Closing idle STT session: ${id}`);
+      if (session.client) session.client.stopRecognition();
+      if (session.ws) session.ws.close();
+      activeSTTConnections.delete(id);
+    }
+  }
+}, 60 * 1000);
+
   ipcMain.handle('transcribe-audio', async (event, params) => {
     try {
       if (!params) throw new Error('No parameters provided to transcribe-audio');
       
-      const { apiKey, baseUrl, audioBuffer, audioData, provider, model } = params;
+      const { apiKey, baseUrl, audioBuffer, audioData, provider, model, sampleRate } = params;
       
       let finalBuffer = audioBuffer;
       if (audioData && !finalBuffer) {
@@ -312,6 +539,16 @@ function createWindow() {
       if (actualSize < MIN_AUDIO_SIZE) {
         console.warn(`[Main] Skipping transcription: Audio chunk too small (${actualSize} bytes)`);
         return ''; // Return empty string instead of erroring to avoid UI noise
+      }
+
+      // Handle Speechmatics Provider
+      if (provider === 'speechmatics') {
+        return await getSpeechmaticsTranscript({ apiKey, finalBuffer, model, sampleRate });
+      }
+
+      // Handle AssemblyAI Provider
+      if (provider === 'assemblyai') {
+        return await getAssemblyAITranscript({ apiKey, finalBuffer, model, baseUrl, sampleRate });
       }
 
       // Handle Gemini Provider

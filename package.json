@@ -1,7 +1,7 @@
 {
   "name": "clueInterview",
   "private": true,
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "AI Interview Copilot with Stealth Mode",
   "author": "Holak Inc",
   "type": "module",
@@ -63,12 +63,15 @@
     }
   },
   "dependencies": {
+    "@speechmatics/auth": "^0.1.0",
+    "@speechmatics/real-time-client": "^8.3.1",
     "electron-updater": "^6.7.3",
     "lucide-react": "^0.563.0",
     "openai": "^6.18.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.13.0"
+    "react-router-dom": "^7.13.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

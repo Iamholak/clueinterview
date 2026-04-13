@@ -178,6 +178,12 @@ export default function Settings() {
     } else if (provider === 'gemini') {
       setWhisperBaseUrl('https://generativelanguage.googleapis.com/v1beta');
       setWhisperModel('gemini-2.5-flash');
+    } else if (provider === 'speechmatics') {
+      setWhisperBaseUrl('https://portal.speechmatics.com');
+      setWhisperModel('en');
+    } else if (provider === 'assemblyai') {
+      setWhisperBaseUrl('wss://streaming.assemblyai.com/v3/ws');
+      setWhisperModel('u3-rt-pro');
     }
   };
 
@@ -605,7 +611,10 @@ export default function Settings() {
   useEffect(() => {
     if (window.electron && window.electron.onUpdateStatus) {
       window.electron.onUpdateStatus((data) => {
-        setUpdateStatus(data as any);
+        setUpdateStatus({
+          status: data.status as 'idle' | 'checking' | 'available' | 'latest' | 'error',
+          message: data.message
+        });
         if (data.status === 'downloaded' || data.status === 'latest' || data.status === 'error') {
           setUpdateProgress(null);
         }
@@ -737,6 +746,10 @@ export default function Settings() {
         baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
       } else if (transcriptionProvider === 'openrouter') {
         baseUrl = 'https://openrouter.ai/api/v1';
+      } else if (transcriptionProvider === 'speechmatics') {
+        baseUrl = 'https://portal.speechmatics.com';
+      } else if (transcriptionProvider === 'assemblyai') {
+        baseUrl = 'wss://streaming.assemblyai.com/v3/ws';
       } else {
         baseUrl = 'https://api.openai.com/v1';
       }
@@ -754,7 +767,70 @@ export default function Settings() {
         const stream = await navigator.mediaDevices.getUserMedia({ 
             audio: selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : true 
         });
-        
+        const isRealtimeProvider = transcriptionProvider === 'speechmatics' || transcriptionProvider === 'assemblyai';
+
+        if (isRealtimeProvider) {
+            const audioContext = new AudioContext({ sampleRate: 16000 });
+            const source = audioContext.createMediaStreamSource(stream);
+            const processor = audioContext.createScriptProcessor(4096, 1, 1);
+            const muteGain = audioContext.createGain();
+            muteGain.gain.value = 0;
+            const pcmChunks: Int16Array[] = [];
+
+            source.connect(processor);
+            processor.connect(muteGain);
+            muteGain.connect(audioContext.destination);
+
+            processor.onaudioprocess = (event) => {
+                const input = event.inputBuffer.getChannelData(0);
+                const output = new Int16Array(input.length);
+                for (let i = 0; i < input.length; i += 1) {
+                    const sample = Math.max(-1, Math.min(1, input[i]));
+                    output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+                }
+                pcmChunks.push(output);
+            };
+
+            setTranscriptionTestStatus({ state: 'testing', message: 'Recording 2 seconds of raw PCM audio...' });
+
+            setTimeout(async () => {
+                processor.disconnect();
+                processor.onaudioprocess = null;
+                stream.getTracks().forEach(track => track.stop());
+                await audioContext.close();
+
+                try {
+                    const totalSamples = pcmChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+                    const merged = new Int16Array(totalSamples);
+                    let offset = 0;
+                    for (const chunk of pcmChunks) {
+                        merged.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+
+                    setTranscriptionTestStatus({ state: 'testing', message: 'Sending raw PCM audio to API...' });
+                    const text = await window.electron.transcribeAudio({
+                        apiKey,
+                        baseUrl,
+                        model,
+                        audioBuffer: new Uint8Array(merged.buffer),
+                        provider: transcriptionProvider,
+                        sampleRate: audioContext.sampleRate
+                    });
+
+                    setTranscriptionTestStatus({
+                        state: 'success',
+                        message: text ? `Transcribed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"` : 'Transcribed empty text.'
+                    });
+                } catch (err: unknown) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    setTranscriptionTestStatus({ state: 'error', message: `API Error: ${message}` });
+                }
+            }, 2000);
+
+            return;
+        }
+
         const mediaRecorder = new MediaRecorder(stream);
         const chunks: Blob[] = [];
         
@@ -782,11 +858,13 @@ export default function Settings() {
                         state: 'success', 
                         message: text ? `Transcribed: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"` : 'Transcribed empty text.' 
                     });
-                } catch (err: any) {
-                    setTranscriptionTestStatus({ state: 'error', message: `API Error: ${err.message || err}` });
+                } catch (err: unknown) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    setTranscriptionTestStatus({ state: 'error', message: `API Error: ${message}` });
                 }
-            } catch (err: any) {
-                setTranscriptionTestStatus({ state: 'error', message: `Test failed: ${err.message || err}` });
+            } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : String(err);
+                setTranscriptionTestStatus({ state: 'error', message: `Test failed: ${message}` });
             } finally {
                 stream.getTracks().forEach(track => track.stop());
             }
@@ -801,8 +879,9 @@ export default function Settings() {
             }
         }, 2000);
         
-    } catch (err: any) {
-        setTranscriptionTestStatus({ state: 'error', message: `Microphone error: ${err.message || err}` });
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        setTranscriptionTestStatus({ state: 'error', message: `Microphone error: ${message}` });
     }
   };
 
@@ -964,6 +1043,8 @@ export default function Settings() {
                                 <option value="openai">OpenAI Whisper</option>
                                 <option value="openrouter">OpenRouter</option>
                                 <option value="gemini">Google Gemini</option>
+                                <option value="speechmatics">Speechmatics (Real-time)</option>
+                                <option value="assemblyai">AssemblyAI (Real-time)</option>
                                 <option value="custom">Custom (OpenAI Compatible)</option>
                             </select>
                         </div>
@@ -996,6 +1077,8 @@ export default function Settings() {
                             placeholder={
                                 transcriptionProvider === 'openrouter' ? "https://openrouter.ai/api/v1" : 
                                 transcriptionProvider === 'gemini' ? "https://generativelanguage.googleapis.com/v1beta" :
+                                transcriptionProvider === 'speechmatics' ? "https://portal.speechmatics.com" :
+                                transcriptionProvider === 'assemblyai' ? "wss://streaming.assemblyai.com/v3/ws" :
                                 "https://api.openai.com/v1"
                             }
                         />
@@ -1008,7 +1091,12 @@ export default function Settings() {
                             className="form-control" 
                             value={whisperModel}
                             onChange={(e) => setWhisperModel(e.target.value)}
-                            placeholder={transcriptionProvider === 'gemini' ? "gemini-2.5-flash" : "whisper-1"}
+                            placeholder={
+                                transcriptionProvider === 'gemini' ? "gemini-2.5-flash" : 
+                                transcriptionProvider === 'speechmatics' ? "en" :
+                                transcriptionProvider === 'assemblyai' ? "u3-rt-pro" :
+                                "whisper-1"
+                            }
                         />
                     </div>
 
@@ -1671,7 +1759,7 @@ export default function Settings() {
                 {saveStatus === 'saved' ? 'Settings Saved!' : 'Save Settings'}
              </button>
              <p style={{fontSize: '0.8rem', color: '#666', textAlign: 'center'}}>
-                Clue Interview v1.2.3 - Multi-API Support & Vision
+                Clue Interview v1.2.4 - Multi-API Support & Vision
              </p>
           </div>
         </div>

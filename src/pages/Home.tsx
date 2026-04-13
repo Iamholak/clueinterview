@@ -405,9 +405,15 @@ export default function Home() {
         return stored === 'true'; 
     });
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const pcmStreamRef = useRef<MediaStream | null>(null);
+  const pcmAudioContextRef = useRef<AudioContext | null>(null);
+  const pcmProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const liveTranscriptBufferRef = useRef('');
   const transcriptPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTranscribingChunkRef = useRef(false);
+  const pcmPendingChunksRef = useRef<Int16Array[]>([]);
+  const pcmPendingSamplesRef = useRef(0);
+  const pcmFlushRef = useRef<(() => Promise<void>) | null>(null);
   
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -432,6 +438,10 @@ export default function Home() {
         baseUrl = chatBaseUrl || 'https://api.openai.com/v1';
       } else if (transcriptionProvider === 'gemini') {
         baseUrl = chatBaseUrl || 'https://generativelanguage.googleapis.com/v1beta';
+      } else if (transcriptionProvider === 'speechmatics') {
+        baseUrl = 'https://portal.speechmatics.com';
+      } else if (transcriptionProvider === 'assemblyai') {
+        baseUrl = 'wss://streaming.assemblyai.com/v3/ws';
       } else {
         baseUrl = chatBaseUrl || 'https://api.openai.com/v1';
       }
@@ -466,6 +476,26 @@ export default function Home() {
       setCurrentTranscript('');
       finalizeTranscriptChunk(buffered);
     }, 1500);
+  };
+
+  const isRealtimePcmProvider = (provider: string) => provider === 'assemblyai' || provider === 'speechmatics';
+
+  const convertFloat32ToInt16 = (input: Float32Array) => {
+    const output = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i += 1) {
+      const sample = Math.max(-1, Math.min(1, input[i]));
+      output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    }
+    return output;
+  };
+
+  const safeCloseAudioContext = (context: AudioContext | null) => {
+    if (!context || context.state === 'closed') {
+      return;
+    }
+    void context.close().catch(() => {
+      void 0;
+    });
   };
 
   const scrollToBottom = () => {
@@ -542,7 +572,7 @@ export default function Home() {
   };
 
   const startWhisperRecording = async () => {
-      const { apiKey } = resolveTranscriptionConfig();
+      const { apiKey, baseUrl, model, transcriptionProvider } = resolveTranscriptionConfig();
       
       if (!apiKey) {
           const msg = 'Error: No API Key found. For reliable speech recognition in the desktop app, please configure an OpenAI API Key in Settings.';
@@ -559,11 +589,9 @@ export default function Home() {
           };
           
           const stream = await navigator.mediaDevices.getUserMedia(constraints);
-          const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-          mediaRecorderRef.current = mediaRecorder;
-          
+
           // Audio Visualizer Setup
-          const audioContext = new AudioContext();
+          const audioContext = new AudioContext({ sampleRate: 16000 });
           const source = audioContext.createMediaStreamSource(stream);
           const analyser = audioContext.createAnalyser();
           analyser.fftSize = 64; // Small size for performance
@@ -572,7 +600,7 @@ export default function Home() {
           
           const updateVisualizer = () => {
               if (!isRecordingRef.current) {
-                  audioContext.close();
+                  safeCloseAudioContext(audioContext);
                   return;
               }
               analyser.getByteFrequencyData(dataArray);
@@ -585,6 +613,82 @@ export default function Home() {
           updateVisualizer();
           liveTranscriptBufferRef.current = '';
           setCurrentTranscript('');
+
+          if (isRealtimePcmProvider(transcriptionProvider)) {
+              pcmStreamRef.current = stream;
+              pcmAudioContextRef.current = audioContext;
+
+              const processor = audioContext.createScriptProcessor(4096, 1, 1);
+              const muteGain = audioContext.createGain();
+              muteGain.gain.value = 0;
+              source.connect(processor);
+              processor.connect(muteGain);
+              muteGain.connect(audioContext.destination);
+              pcmProcessorRef.current = processor;
+
+              const chunkTargetSamples = Math.floor(audioContext.sampleRate * 0.8);
+              pcmPendingChunksRef.current = [];
+              pcmPendingSamplesRef.current = 0;
+
+              const flushPcmChunk = async () => {
+                  if (!window.electron || !window.electron.transcribeAudio || pcmPendingSamplesRef.current === 0 || isTranscribingChunkRef.current) {
+                      return;
+                  }
+
+                  const merged = new Int16Array(pcmPendingSamplesRef.current);
+                  let offset = 0;
+                  for (const chunk of pcmPendingChunksRef.current) {
+                      merged.set(chunk, offset);
+                      offset += chunk.length;
+                  }
+                  pcmPendingChunksRef.current = [];
+                  pcmPendingSamplesRef.current = 0;
+
+                  isTranscribingChunkRef.current = true;
+                  try {
+                      const text = await window.electron.transcribeAudio({
+                          apiKey,
+                          baseUrl,
+                          audioBuffer: new Uint8Array(merged.buffer),
+                          provider: transcriptionProvider,
+                          model,
+                          sampleRate: audioContext.sampleRate
+                      });
+
+                      const trimmed = (text || '').trim();
+                      if (!trimmed) return;
+
+                      const previous = liveTranscriptBufferRef.current.trim();
+                      const next = previous ? `${previous} ${trimmed}` : trimmed;
+                      liveTranscriptBufferRef.current = next;
+                      setCurrentTranscript(next);
+                      queueTranscriptFinalize();
+                  } catch (err) {
+                      console.error("Realtime STT Error:", err);
+                  } finally {
+                      isTranscribingChunkRef.current = false;
+                  }
+              };
+              pcmFlushRef.current = flushPcmChunk;
+
+              processor.onaudioprocess = (event) => {
+                  if (!isRecordingRef.current) {
+                      return;
+                  }
+                  const pcmChunk = convertFloat32ToInt16(event.inputBuffer.getChannelData(0));
+                  pcmPendingChunksRef.current.push(pcmChunk);
+                  pcmPendingSamplesRef.current += pcmChunk.length;
+                  if (pcmPendingSamplesRef.current >= chunkTargetSamples) {
+                      void flushPcmChunk();
+                  }
+              };
+
+              setIsListening(true);
+              return;
+          }
+
+          const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+          mediaRecorderRef.current = mediaRecorder;
 
           mediaRecorder.ondataavailable = async (e) => {
               if (e.data.size > 0) {
@@ -602,13 +706,6 @@ export default function Home() {
                   try {
                       const arrayBuffer = await e.data.arrayBuffer();
                       const uint8Array = new Uint8Array(arrayBuffer);
-                      const { apiKey, baseUrl, model, transcriptionProvider } = resolveTranscriptionConfig();
-
-                      if (!apiKey) {
-                          console.warn("No API Key available for Transcription.");
-                          return;
-                      }
-
                       const text = await window.electron.transcribeAudio({
                           apiKey,
                           baseUrl,
@@ -649,6 +746,9 @@ export default function Home() {
           clearTimeout(transcriptPauseTimerRef.current);
           transcriptPauseTimerRef.current = null;
       }
+      if (pcmFlushRef.current && pcmPendingSamplesRef.current > 0) {
+          void pcmFlushRef.current();
+      }
       const buffered = liveTranscriptBufferRef.current.trim();
       if (buffered) {
           liveTranscriptBufferRef.current = '';
@@ -658,6 +758,22 @@ export default function Home() {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
           mediaRecorderRef.current.stop(); // This triggers final dataavailable
       }
+      if (pcmProcessorRef.current) {
+        pcmProcessorRef.current.disconnect();
+        pcmProcessorRef.current.onaudioprocess = null;
+        pcmProcessorRef.current = null;
+      }
+      if (pcmStreamRef.current) {
+        pcmStreamRef.current.getTracks().forEach(track => track.stop());
+        pcmStreamRef.current = null;
+      }
+      if (pcmAudioContextRef.current) {
+        safeCloseAudioContext(pcmAudioContextRef.current);
+        pcmAudioContextRef.current = null;
+      }
+      pcmPendingChunksRef.current = [];
+      pcmPendingSamplesRef.current = 0;
+      pcmFlushRef.current = null;
       setIsListening(false);
       
       // Stop all tracks

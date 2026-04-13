@@ -34,6 +34,7 @@ type TranscribeAudioParams = {
   baseUrl: string;
   provider: string;
   model?: string;
+  sampleRate?: number;
   audioBuffer?: ArrayBuffer | Uint8Array;
   audioData?: string;
 } & ({ audioBuffer: ArrayBuffer | Uint8Array } | { audioData: string });
