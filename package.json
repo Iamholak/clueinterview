@@ -1,7 +1,7 @@
 {
   "name": "clueInterview",
   "private": true,
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "AI Interview Copilot with Stealth Mode",
   "author": "Holak Inc",
   "type": "module",

@@ -1908,7 +1908,7 @@ export default function Settings() {
                 {saveStatus === 'saved' ? 'Settings Saved!' : 'Save Settings'}
              </button>
              <p style={{fontSize: '0.8rem', color: '#666', textAlign: 'center'}}>
-                Clue Interview v1.2.4 - Multi-API Support & Vision
+                Clue Interview v1.2.5 - Multi-API Support & Vision
              </p>
           </div>
         </div>
