@@ -34,10 +34,20 @@ type TranscribeAudioParams = {
   baseUrl: string;
   provider: string;
   model?: string;
+  language?: string;
   sampleRate?: number;
   audioBuffer?: ArrayBuffer | Uint8Array;
   audioData?: string;
 } & ({ audioBuffer: ArrayBuffer | Uint8Array } | { audioData: string });
+
+type TranscribeAudioResult =
+  | string
+  | {
+      provider: string;
+      text: string;
+      isFinal?: boolean;
+      kind?: string;
+    };
 
 declare global {
   interface Window {
@@ -51,7 +61,7 @@ declare global {
       toggleWindow: () => void;
       captureScreen: () => Promise<string>;
       askAI: (params: AskAIParams) => Promise<string>;
-      transcribeAudio: (params: TranscribeAudioParams) => Promise<string>;
+      transcribeAudio: (params: TranscribeAudioParams) => Promise<TranscribeAudioResult>;
       resize: (width: number, height: number) => void;
       setContentProtection?: (enable: boolean) => void;
       setTransparency?: (enabled: boolean, percent: number) => void;

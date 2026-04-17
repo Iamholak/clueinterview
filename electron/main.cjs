@@ -294,7 +294,7 @@ function createWindow() {
 let activeSTTConnections = new Map();
 
 async function getSpeechmaticsTranscript(params) {
-  const { apiKey, finalBuffer, model, sampleRate } = params;
+  const { apiKey, finalBuffer, model, language, sampleRate } = params;
   const sessionId = 'speechmatics-global';
   
   try {
@@ -315,16 +315,38 @@ async function getSpeechmaticsTranscript(params) {
         client, 
         ws: null,
         transcript: '', 
+        partialTranscript: '',
         apiKey, 
         lastUsed: Date.now(),
         isReady: false,
-        handshakeError: null
+        handshakeError: null,
+        pendingResolvers: []
       };
 
       client.addEventListener("receiveMessage", ({ data }) => {
-        if (data.message === "AddTranscript") {
-          for (const result of data.results) {
-            newSession.transcript += result.alternatives?.[0].content + ' ';
+        if (data.message === "AddTranscript" || data.message === "AddPartialTranscript") {
+          const transcriptText = typeof data.metadata?.transcript === 'string'
+            ? data.metadata.transcript.trim()
+            : Array.isArray(data.results)
+              ? data.results.map((result) => result.alternatives?.[0]?.content || '').join(' ').trim()
+              : '';
+
+          if (data.message === "AddTranscript") {
+            newSession.transcript = transcriptText;
+          } else {
+            newSession.partialTranscript = transcriptText;
+          }
+
+          const resolvedTranscript = (newSession.transcript || newSession.partialTranscript).trim();
+          if (resolvedTranscript) {
+            for (const resolve of newSession.pendingResolvers.splice(0)) {
+              resolve({
+                provider: 'speechmatics',
+                text: resolvedTranscript,
+                isFinal: data.message === "AddTranscript",
+                kind: data.message === "AddTranscript" ? 'final_segment' : 'partial_segment'
+              });
+            }
           }
         } else if (data.message === "RecognitionStarted") {
           newSession.isReady = true;
@@ -340,10 +362,13 @@ async function getSpeechmaticsTranscript(params) {
         ttl: 3600,
       });
 
+    const operatingPoint = (model || 'standard').trim() || 'standard';
+    const languageCode = (language || 'en').trim() || 'en';
+
       await client.start(jwt, {
         transcription_config: {
-          language: model || "en",
-          operating_point: "enhanced",
+          language: languageCode,
+          operating_point: operatingPoint,
           max_delay: 1.0,
           enable_partials: true,
           transcript_filtering_config: {
@@ -382,15 +407,34 @@ async function getSpeechmaticsTranscript(params) {
       session = newSession;
     }
 
+    const previousTranscript = (session.transcript || session.partialTranscript || '').trim();
     session.transcript = ''; 
+    session.partialTranscript = '';
     session.lastUsed = Date.now();
     
     await session.client.sendAudio(Buffer.from(finalBuffer));
-    
-    // Wait for transcript
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    return session.transcript.trim();
+
+    const nextTranscript = await new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        const index = session.pendingResolvers.indexOf(onTranscript);
+        if (index >= 0) {
+          session.pendingResolvers.splice(index, 1);
+        }
+        resolve({ provider: 'speechmatics', text: '', isFinal: false, kind: 'timeout' });
+      }, 2500);
+
+      const onTranscript = (payload) => {
+        if (!payload?.text || payload.text === previousTranscript) {
+          return;
+        }
+        clearTimeout(timeoutId);
+        resolve(payload);
+      };
+
+      session.pendingResolvers.push(onTranscript);
+    });
+
+    return nextTranscript;
   } catch (err) {
     console.error('Speechmatics Error:', err);
     activeSTTConnections.delete(sessionId);
@@ -414,7 +458,8 @@ async function getAssemblyAITranscript(params) {
         ? providedBaseUrl
         : 'wss://streaming.assemblyai.com/v3/ws';
       const baseUrlClean = normalizedBaseUrl.replace(/\/+$/, '');
-      const url = `${baseUrlClean}?sample_rate=${sampleRate || 16000}&encoding=pcm_s16le&speech_model=${encodeURIComponent(model || 'u3-rt-pro')}`;
+      const targetModel = model || 'universal-streaming-english';
+      const url = `${baseUrlClean}?sample_rate=${sampleRate || 16000}&encoding=pcm_s16le&speech_model=${encodeURIComponent(targetModel)}&format_turns=false&end_of_turn_confidence_threshold=0.3`;
       
       console.log(`[Main] Connecting to AssemblyAI: ${baseUrlClean}`);
       
@@ -426,10 +471,13 @@ async function getAssemblyAITranscript(params) {
         ws, 
         client: null,
         transcript: '', 
+        utterance: '',
+        endOfTurn: false,
         apiKey, 
         lastUsed: Date.now(),
         isReady: false,
-        handshakeError: null
+        handshakeError: null,
+        pendingResolvers: []
       };
       
       ws.on('message', (data) => {
@@ -441,8 +489,19 @@ async function getAssemblyAITranscript(params) {
           if (msg.type === 'Begin') {
             newSession.isReady = true;
           } else if (msg.type === 'Turn') {
-            if (msg.transcript) {
-              newSession.transcript = msg.transcript;
+            newSession.transcript = typeof msg.transcript === 'string' ? msg.transcript.trim() : '';
+            newSession.utterance = typeof msg.utterance === 'string' ? msg.utterance.trim() : '';
+            newSession.endOfTurn = !!msg.end_of_turn;
+            if (newSession.transcript || newSession.utterance) {
+              const payload = {
+                provider: 'assemblyai',
+                transcript: newSession.transcript,
+                utterance: newSession.utterance,
+                endOfTurn: newSession.endOfTurn
+              };
+              for (const resolve of newSession.pendingResolvers.splice(0)) {
+                resolve(payload);
+              }
             }
           } else if (msg.type === 'Error' || msg.error) {
             const errText = msg.error || msg.message || JSON.stringify(msg);
@@ -487,16 +546,54 @@ async function getAssemblyAITranscript(params) {
       session = newSession;
     }
 
-    session.transcript = ''; // Reset for this chunk
+    const previousTranscript = session.transcript;
+    const previousUtterance = session.utterance;
     session.lastUsed = Date.now();
     
     const buffer = Buffer.from(finalBuffer);
     session.ws.send(buffer, { binary: true });
-    
-    // Wait for response (AssemblyAI real-time is very fast, but we need to give it a moment)
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    return session.transcript.trim();
+
+    const nextTurn = await new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        const index = session.pendingResolvers.indexOf(onUpdate);
+        if (index >= 0) {
+          session.pendingResolvers.splice(index, 1);
+        }
+        resolve({ provider: 'assemblyai', text: '', isFinal: false, kind: 'timeout' });
+      }, 2500);
+
+      const onUpdate = (payload) => {
+        const transcriptChanged = payload.transcript && payload.transcript !== previousTranscript;
+        const utteranceChanged = payload.utterance && payload.utterance !== previousUtterance;
+        if (!transcriptChanged && !utteranceChanged) {
+          return;
+        }
+        clearTimeout(timeoutId);
+        resolve(payload);
+      };
+
+      session.pendingResolvers.push(onUpdate);
+    });
+
+    if (!nextTurn || !nextTurn.provider) {
+      return { provider: 'assemblyai', text: '', isFinal: false, kind: 'timeout' };
+    }
+
+    if (nextTurn.utterance) {
+      return {
+        provider: 'assemblyai',
+        text: nextTurn.utterance,
+        isFinal: true,
+        kind: 'utterance'
+      };
+    }
+
+    return {
+      provider: 'assemblyai',
+      text: nextTurn.transcript || '',
+      isFinal: !!nextTurn.endOfTurn,
+      kind: nextTurn.endOfTurn ? 'turn_final' : 'turn_progress'
+    };
   } catch (err) {
     console.error('AssemblyAI Error:', err);
     activeSTTConnections.delete(sessionId);
@@ -521,7 +618,7 @@ setInterval(() => {
     try {
       if (!params) throw new Error('No parameters provided to transcribe-audio');
       
-      const { apiKey, baseUrl, audioBuffer, audioData, provider, model, sampleRate } = params;
+      const { apiKey, baseUrl, audioBuffer, audioData, provider, model, language, sampleRate } = params;
       
       let finalBuffer = audioBuffer;
       if (audioData && !finalBuffer) {
@@ -543,7 +640,7 @@ setInterval(() => {
 
       // Handle Speechmatics Provider
       if (provider === 'speechmatics') {
-        return await getSpeechmaticsTranscript({ apiKey, finalBuffer, model, sampleRate });
+        return await getSpeechmaticsTranscript({ apiKey, finalBuffer, model, language, sampleRate });
       }
 
       // Handle AssemblyAI Provider
@@ -567,7 +664,7 @@ setInterval(() => {
           const body = {
               contents: [{
                   parts: [
-                      { text: "Transcribe the following audio exactly. Output only the transcription text." },
+                      { text: `You are doing speech-to-text transcription. Transcribe the spoken audio exactly in ${language || 'English'}. Do not answer questions, summarize, infer, or add filler. If the audio is unclear, return only the words you can hear.` },
                       {
                           inline_data: {
                               mime_type: "audio/webm",
@@ -575,7 +672,13 @@ setInterval(() => {
                           }
                       }
                   ]
-              }]
+              }],
+              generationConfig: {
+                  temperature: 0,
+                  topP: 0.1,
+                  maxOutputTokens: 256,
+                  responseMimeType: 'text/plain'
+              }
           };
 
           const response = await fetch(url, {
@@ -615,7 +718,7 @@ setInterval(() => {
                 content: [
                   {
                     type: 'text',
-                    text: 'Transcribe this audio exactly. Return only the transcription text.'
+                    text: `Transcribe this audio exactly in ${language || 'English'}. Return only the transcription text.`
                   },
                   {
                     type: 'input_audio',
@@ -647,6 +750,9 @@ setInterval(() => {
       const formData = new FormData();
       formData.append('file', blob, 'recording.webm');
       formData.append('model', model || 'whisper-1');
+      if (language) {
+        formData.append('language', language);
+      }
 
       console.log('[Main] Transcribing with Whisper at:', url);
 

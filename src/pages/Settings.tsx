@@ -31,6 +31,29 @@ interface CodeEnvironmentConfig {
   enableCompletionSuggestions: boolean;
 }
 
+interface TranscriptionProfile {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  language: string;
+}
+
+type TranscribeAudioResult = string | { provider: string; text: string; isFinal?: boolean; kind?: string };
+
+type TranscriptionProfiles = Record<string, TranscriptionProfile>;
+
+const normalizeTranscriptionProfile = (provider: string, profile: TranscriptionProfile): TranscriptionProfile => {
+  if (provider !== 'speechmatics') {
+    return profile;
+  }
+
+  return {
+    ...profile,
+    model: profile.model === 'enhanced' ? 'standard' : (profile.model || 'standard'),
+    language: profile.language || 'en',
+  };
+};
+
 /*
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
@@ -47,6 +70,63 @@ interface SpeechRecognition extends EventTarget {
 */
 
 // Global types defined in src/types.d.ts
+
+const getDefaultTranscriptionProfile = (provider: string): TranscriptionProfile => {
+  if (provider === 'groq') {
+    return {
+      apiKey: '',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      model: 'whisper-large-v3-turbo',
+      language: 'en',
+    };
+  }
+  if (provider === 'openrouter') {
+    return {
+      apiKey: '',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/whisper-1',
+      language: 'en',
+    };
+  }
+  if (provider === 'gemini') {
+    return {
+      apiKey: '',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      model: 'gemini-2.5-flash',
+      language: 'en',
+    };
+  }
+  if (provider === 'speechmatics') {
+    return {
+      apiKey: '',
+      baseUrl: 'https://portal.speechmatics.com',
+      model: 'standard',
+      language: 'en',
+    };
+  }
+  if (provider === 'assemblyai') {
+    return {
+      apiKey: '',
+      baseUrl: 'wss://streaming.assemblyai.com/v3/ws',
+      model: 'u3-rt-pro',
+      language: 'en',
+    };
+  }
+  if (provider === 'custom') {
+    return {
+      apiKey: '',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'whisper-1',
+      language: 'en',
+    };
+  }
+  return {
+    apiKey: '',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'whisper-1',
+    language: 'en',
+  };
+};
 
 export default function Settings() {
   const [apis, setApis] = useState<ApiConfig[]>(() => {
@@ -96,9 +176,42 @@ export default function Settings() {
   // Lazy init to prevent overwriting saved settings with defaults on first render
   const [useWhisper, setUseWhisper] = useState(() => localStorage.getItem('use_whisper_stt') === 'true');
   const [transcriptionProvider, setTranscriptionProvider] = useState(() => localStorage.getItem('transcription_provider') || 'openai');
-  const [whisperApiKey, setWhisperApiKey] = useState(() => localStorage.getItem('whisper_api_key') || '');
-  const [whisperBaseUrl, setWhisperBaseUrl] = useState(() => localStorage.getItem('whisper_base_url') || 'https://api.openai.com/v1');
-  const [whisperModel, setWhisperModel] = useState(() => localStorage.getItem('whisper_model') || 'gemini-2.5-flash');
+  const [transcriptionProfiles, setTranscriptionProfiles] = useState<TranscriptionProfiles>(() => {
+    const storedProfiles = localStorage.getItem('transcription_profiles');
+    if (storedProfiles) {
+      try {
+        const parsed = JSON.parse(storedProfiles) as TranscriptionProfiles;
+        return Object.fromEntries(
+          Object.entries(parsed).map(([provider, profile]) => [
+            provider,
+            normalizeTranscriptionProfile(provider, profile)
+          ])
+        );
+      } catch {
+        void 0;
+      }
+    }
+
+    const legacyProvider = localStorage.getItem('transcription_provider') || 'openai';
+    const defaults = getDefaultTranscriptionProfile(legacyProvider);
+    return {
+      [legacyProvider]: {
+        apiKey: localStorage.getItem('whisper_api_key') || defaults.apiKey,
+        baseUrl: localStorage.getItem('whisper_base_url') || defaults.baseUrl,
+        model: localStorage.getItem('whisper_model') || defaults.model,
+        language: localStorage.getItem('whisper_language') || defaults.language,
+      }
+    };
+  });
+  const activeTranscriptionProfile = normalizeTranscriptionProfile(
+    transcriptionProvider,
+    transcriptionProfiles[transcriptionProvider] || getDefaultTranscriptionProfile(transcriptionProvider)
+  );
+  const getTranscriptionText = (result: TranscribeAudioResult) => typeof result === 'string' ? result : (result.text || '');
+  const whisperApiKey = activeTranscriptionProfile.apiKey;
+  const whisperBaseUrl = activeTranscriptionProfile.baseUrl;
+  const whisperModel = activeTranscriptionProfile.model;
+  const whisperLanguage = activeTranscriptionProfile.language;
   const [screenCapturePermission, setScreenCapturePermission] = useState(() => localStorage.getItem('screen_capture_permission') === 'true');
   const [isInvisible, setIsInvisible] = useState(() => {
     const savedInvisibility = localStorage.getItem('app_invisibility');
@@ -163,28 +276,30 @@ export default function Settings() {
       localStorage.setItem('use_whisper_stt', String(newState));
   };
 
+  const updateTranscriptionProfile = (provider: string, updates: Partial<TranscriptionProfile>) => {
+    setTranscriptionProfiles((prev) => {
+      const current = prev[provider] || getDefaultTranscriptionProfile(provider);
+      return {
+        ...prev,
+        [provider]: normalizeTranscriptionProfile(provider, {
+          ...current,
+          ...updates,
+        }),
+      };
+    });
+  };
+
   const handleTranscriptionProviderChange = (provider: string) => {
     setTranscriptionProvider(provider);
-    
-    // Don't clear the key anymore, let the user decide if they want to change it
-    // setWhisperApiKey('');
-    
-    if (provider === 'openai') {
-      setWhisperBaseUrl('https://api.openai.com/v1');
-      setWhisperModel('whisper-1');
-    } else if (provider === 'openrouter') {
-      setWhisperBaseUrl('https://openrouter.ai/api/v1');
-      setWhisperModel('openai/whisper-1');
-    } else if (provider === 'gemini') {
-      setWhisperBaseUrl('https://generativelanguage.googleapis.com/v1beta');
-      setWhisperModel('gemini-2.5-flash');
-    } else if (provider === 'speechmatics') {
-      setWhisperBaseUrl('https://portal.speechmatics.com');
-      setWhisperModel('en');
-    } else if (provider === 'assemblyai') {
-      setWhisperBaseUrl('wss://streaming.assemblyai.com/v3/ws');
-      setWhisperModel('u3-rt-pro');
-    }
+    setTranscriptionProfiles((prev) => {
+      if (prev[provider]) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [provider]: getDefaultTranscriptionProfile(provider),
+      };
+    });
   };
 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved'>('idle');
@@ -217,9 +332,11 @@ export default function Settings() {
     
     // Save Whisper settings
     localStorage.setItem('transcription_provider', transcriptionProvider);
+    localStorage.setItem('transcription_profiles', JSON.stringify(transcriptionProfiles));
     localStorage.setItem('whisper_api_key', whisperApiKey);
     localStorage.setItem('whisper_base_url', whisperBaseUrl);
     localStorage.setItem('whisper_model', whisperModel);
+    localStorage.setItem('whisper_language', whisperLanguage);
     localStorage.setItem('screen_capture_permission', String(screenCapturePermission));
 
     setSaveStatus('saved');
@@ -249,12 +366,14 @@ export default function Settings() {
     
     // Auto-save Whisper settings
     localStorage.setItem('transcription_provider', transcriptionProvider);
+    localStorage.setItem('transcription_profiles', JSON.stringify(transcriptionProfiles));
     localStorage.setItem('whisper_api_key', whisperApiKey);
     localStorage.setItem('whisper_base_url', whisperBaseUrl);
     localStorage.setItem('whisper_model', whisperModel);
+    localStorage.setItem('whisper_language', whisperLanguage);
     localStorage.setItem('screen_capture_permission', String(screenCapturePermission));
 
-  }, [apis, activeApiId, transcriptionProvider, whisperApiKey, whisperBaseUrl, whisperModel, screenCapturePermission]);
+  }, [apis, activeApiId, transcriptionProvider, transcriptionProfiles, whisperApiKey, whisperBaseUrl, whisperModel, whisperLanguage, screenCapturePermission]);
 
   const addApi = () => {
     const newApi: ApiConfig = {
@@ -676,6 +795,9 @@ export default function Settings() {
             if (value === 'deepseek') {
                 updated.baseUrl = 'https://api.deepseek.com';
                 updated.model = 'deepseek-chat';
+            } else if (value === 'groq') {
+                updated.baseUrl = 'https://api.groq.com/openai/v1';
+                updated.model = 'llama-3.3-70b-versatile';
             } else if (value === 'openrouter') {
                 updated.baseUrl = 'https://openrouter.ai/api/v1';
                 updated.model = 'openai/gpt-3.5-turbo';
@@ -744,6 +866,8 @@ export default function Settings() {
     if (!baseUrl) {
       if (transcriptionProvider === 'gemini') {
         baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
+      } else if (transcriptionProvider === 'groq') {
+        baseUrl = 'https://api.groq.com/openai/v1';
       } else if (transcriptionProvider === 'openrouter') {
         baseUrl = 'https://openrouter.ai/api/v1';
       } else if (transcriptionProvider === 'speechmatics') {
@@ -755,6 +879,7 @@ export default function Settings() {
       }
     }
     const model = (whisperModel || 'whisper-1').trim();
+    const language = (whisperLanguage || 'en').trim() || 'en';
 
     if (!apiKey) {
       setTranscriptionTestStatus({ state: 'error', message: 'API Key is required for transcription test.' });
@@ -809,14 +934,16 @@ export default function Settings() {
                     }
 
                     setTranscriptionTestStatus({ state: 'testing', message: 'Sending raw PCM audio to API...' });
-                    const text = await window.electron.transcribeAudio({
+                    const result = await window.electron.transcribeAudio({
                         apiKey,
                         baseUrl,
                         model,
+                        language,
                         audioBuffer: new Uint8Array(merged.buffer),
                         provider: transcriptionProvider,
                         sampleRate: audioContext.sampleRate
                     });
+                    const text = getTranscriptionText(result);
 
                     setTranscriptionTestStatus({
                         state: 'success',
@@ -846,13 +973,15 @@ export default function Settings() {
                 const uint8Array = new Uint8Array(arrayBuffer);
                 
                 try {
-                    const text = await window.electron.transcribeAudio({
+                    const result = await window.electron.transcribeAudio({
                         apiKey,
                         baseUrl,
                         model,
+                        language,
                         audioBuffer: uint8Array,
                         provider: transcriptionProvider
                     });
+                    const text = getTranscriptionText(result);
                     
                     setTranscriptionTestStatus({ 
                         state: 'success', 
@@ -1041,6 +1170,7 @@ export default function Settings() {
                                 onChange={(e) => handleTranscriptionProviderChange(e.target.value)}
                             >
                                 <option value="openai">OpenAI Whisper</option>
+                                <option value="groq">Groq</option>
                                 <option value="openrouter">OpenRouter</option>
                                 <option value="gemini">Google Gemini</option>
                                 <option value="speechmatics">Speechmatics (Real-time)</option>
@@ -1055,12 +1185,14 @@ export default function Settings() {
                             type="password" 
                             className="form-control" 
                             value={whisperApiKey}
-                            onChange={(e) => setWhisperApiKey(e.target.value)}
-                            placeholder={transcriptionProvider === 'gemini' ? "Gemini API Key" : transcriptionProvider === 'openrouter' ? "OpenRouter API Key" : "sk-..."}
+                            onChange={(e) => updateTranscriptionProfile(transcriptionProvider, { apiKey: e.target.value })}
+                            placeholder={transcriptionProvider === 'gemini' ? "Gemini API Key" : transcriptionProvider === 'groq' ? "Groq API Key" : transcriptionProvider === 'openrouter' ? "OpenRouter API Key" : "sk-..."}
                         />
                         <div style={{fontSize: '0.75rem', color: '#888', marginTop: '4px'}}>
                             {transcriptionProvider === 'gemini'
                               ? "Optional if your active chat profile already uses Gemini."
+                              : transcriptionProvider === 'groq'
+                                ? "Optional if your active chat profile already uses Groq."
                               : transcriptionProvider === 'openrouter'
                                 ? "Optional if your active chat profile already uses OpenRouter."
                                 : "Optional if your active chat profile already supports transcription."}
@@ -1073,8 +1205,9 @@ export default function Settings() {
                             type="text" 
                             className="form-control" 
                             value={whisperBaseUrl}
-                            onChange={(e) => setWhisperBaseUrl(e.target.value)}
+                            onChange={(e) => updateTranscriptionProfile(transcriptionProvider, { baseUrl: e.target.value })}
                             placeholder={
+                                transcriptionProvider === 'groq' ? "https://api.groq.com/openai/v1" :
                                 transcriptionProvider === 'openrouter' ? "https://openrouter.ai/api/v1" : 
                                 transcriptionProvider === 'gemini' ? "https://generativelanguage.googleapis.com/v1beta" :
                                 transcriptionProvider === 'speechmatics' ? "https://portal.speechmatics.com" :
@@ -1085,19 +1218,34 @@ export default function Settings() {
                     </div>
 
                     <div className="form-group">
-                        <label>Model Name (e.g., whisper-1)</label>
+                        <label>{transcriptionProvider === 'speechmatics' ? 'Operating Point' : 'Model Name (e.g., whisper-1)'}</label>
                         <input 
                             type="text" 
                             className="form-control" 
                             value={whisperModel}
-                            onChange={(e) => setWhisperModel(e.target.value)}
+                            onChange={(e) => updateTranscriptionProfile(transcriptionProvider, { model: e.target.value })}
                             placeholder={
+                                transcriptionProvider === 'groq' ? "whisper-large-v3-turbo" :
                                 transcriptionProvider === 'gemini' ? "gemini-2.5-flash" : 
-                                transcriptionProvider === 'speechmatics' ? "en" :
+                                transcriptionProvider === 'speechmatics' ? "standard" :
                                 transcriptionProvider === 'assemblyai' ? "u3-rt-pro" :
                                 "whisper-1"
                             }
                         />
+                    </div>
+
+                    <div className="form-group">
+                        <label>Language Code</label>
+                        <input
+                            type="text"
+                            className="form-control"
+                            value={whisperLanguage}
+                            onChange={(e) => updateTranscriptionProfile(transcriptionProvider, { language: e.target.value })}
+                            placeholder="en"
+                        />
+                        <div style={{fontSize: '0.75rem', color: '#888', marginTop: '4px'}}>
+                            Use `en` for English to reduce wrong-language transcription.
+                        </div>
                     </div>
 
                     <div className="form-group">
@@ -1574,6 +1722,7 @@ export default function Settings() {
             >
               <option value="openai">OpenAI</option>
               <option value="deepseek">DeepSeek</option>
+              <option value="groq">Groq</option>
               <option value="openrouter">OpenRouter</option>
               <option value="gemini">Google Gemini</option>
               <option value="custom">Custom</option>
@@ -1585,7 +1734,7 @@ export default function Settings() {
             <input 
               type="password" 
               className="form-control" 
-              placeholder={activeApi.provider === 'gemini' ? "Gemini API Key" : "sk-..."}
+              placeholder={activeApi.provider === 'gemini' ? "Gemini API Key" : activeApi.provider === 'groq' ? "Groq API Key" : "sk-..."}
               value={activeApi.apiKey} 
               onChange={(e) => updateApi(activeApi.id, 'apiKey', e.target.value)}
             />
@@ -1767,3 +1916,4 @@ export default function Settings() {
     </>
   );
 }
+
